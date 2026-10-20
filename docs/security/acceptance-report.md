@@ -1,5 +1,9 @@
 # Verified inference acceptance report
 
+For the subsequent committed-graph and GPT-2 compiler work, see
+[the current protocol and acceptance report](gpt2-verified.md). This file
+records the earlier bounded STARK milestone.
+
 Date: 2026-10-20. Base: upstream/fork `39d8df9`. Scope: the first closed-loop
 milestone defined in `verified-inference.md`, implemented as `zkie-verified`.
 All code changes and tests were made in the user's fork, not the earlier analysis

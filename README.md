@@ -38,6 +38,18 @@ with no re-run, is the open design item tracked in #15. Weights and activations
 are public: the current route targets correctness and succinctness rather than
 witness hiding.
 
+## Authenticated integer inference in this fork
+
+The separate `zkie-verified` crate now includes a GPT-2 integer-graph compiler,
+model-pinned commitments, bounded rounding/range constraints and a verifier-only
+CLI that does not execute the forward pass or read weight files. Complete
+small-architecture Transformer acceptance passes against an independent integer
+reference. Actual GPT-2 weights and full-size performance have not been validated.
+See [the protocol, commands, evidence and limits](docs/security/gpt2-verified.md).
+Run the bounded suite with `bash scripts/check_verified.sh`; it downloads no model.
+
+The forward-recomputing verifier described above belongs to the legacy route.
+
 ## How it works
 
 1. **Algorithms.** The stack is built on established high-performance proving

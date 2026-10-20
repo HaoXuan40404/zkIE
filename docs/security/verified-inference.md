@@ -1,5 +1,9 @@
 # Verified inference baseline
 
+For the subsequent committed-graph and GPT-2 compiler work, see
+[the current protocol and acceptance report](gpt2-verified.md). This file
+records the earlier bounded STARK milestone.
+
 Status: the first bounded milestone passes local acceptance. This document
 defines its gates; it does not claim that the legacy Transformer/GKR route is hardened.
 
