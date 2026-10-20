@@ -25,3 +25,28 @@ No secret setup and no zero-knowledge claim. This small-network baseline has not
 received an independent cryptographic audit. It is not a generic ONNX compiler,
 Transformer implementation, committed-large-weight verifier or chain verifier.
 
+
+## Separate processes
+
+Build the prover and a genuinely verifier-only target separately:
+
+```sh
+cargo +1.94.1 build --release -p zkie-verified --features prover --bins --locked
+cargo +1.94.1 build --release -p zkie-verified --no-default-features --bin zkie-verify --target-dir target/verified-verifier --locked
+python3 scripts/accept_verified.py target/release/zkie-prove target/verified-verifier/release/zkie-verify
+```
+
+To use the fixture manually, from the repository root:
+
+```sh
+target/release/zkie-prove crates/zkie-verified/fixtures/model.json crates/zkie-verified/fixtures/request.json /tmp/zkie-new-bundle
+
+target/verified-verifier/release/zkie-verify /tmp/zkie-new-bundle/model.json 922fbe3ec1076c9b8f2bdcf93587c29b19c21ad57d3724cde4fd2d8583ed7fbd crates/zkie-verified/fixtures/request.json /tmp/zkie-new-bundle/statement.json /tmp/zkie-new-bundle/proof.bin
+```
+
+The output directory must not exist. The trusted id above is specific to the
+checked-in fixture, not an instruction to trust ids emitted by any prover.
+The verifier also compares input/context to the independently expected request.
+The acceptance script deletes the producer directory before running a copied
+verifier-only binary with just public files and proof in a separate directory.
+It also checks incorrect outputs/requests/model ids and malformed proof files.
