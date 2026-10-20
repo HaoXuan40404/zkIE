@@ -11,11 +11,17 @@ use p3_sumcheck::PrescribedPointPcs;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct Tensor {
-    pub len: usize,
-    pub root: wb::Commitment,
+pub struct Tensor {
+    pub(crate) len: usize,
+    pub(crate) root: wb::Commitment,
 }
 impl Tensor {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
     pub fn validate(&self) -> Result<(), Error> {
         if !self.len.is_power_of_two() || self.len > (1 << 25) || self.root.num_roots() != 1 {
             return Err(Error::InvalidModel);
@@ -191,6 +197,15 @@ impl View {
 #[derive(Clone)]
 pub(crate) enum Factor {
     Oracle(View),
+    Index {
+        start: usize,
+        bits: usize,
+    },
+    Prefix {
+        start: usize,
+        bits: usize,
+        limit: usize,
+    },
     Eq {
         point: Vec<E>,
         start: usize,
@@ -208,6 +223,10 @@ pub(crate) enum Factor {
 impl Factor {
     fn public_eval(&self, r: &[E]) -> E {
         match self {
+            Self::Index { start, bits } => {
+                (0..*bits).map(|i| r[start + i] * E::from_u64(1 << i)).sum()
+            }
+            Self::Prefix { start, bits, limit } => prefix(*limit, &r[*start..*start + *bits]),
             Self::Eq { point, start } => point
                 .iter()
                 .zip(&r[*start..])
@@ -259,6 +278,11 @@ impl Relation {
                                 return Err(Error::InvalidModel);
                             }
                         }
+                    }
+                }
+                Factor::Index { start, bits } | Factor::Prefix { start, bits, .. } => {
+                    if *bits > 25 || start + bits > self.log {
+                        return Err(Error::InvalidModel);
                     }
                 }
                 Factor::Eq { point, start } => {
@@ -525,5 +549,21 @@ mod tests {
         let mut vc = c.clone();
         let proof = prove_relation(&desc, &bad, &mut c).unwrap();
         assert!(verify_relation(&desc, &[bad[0].tensor.clone()], &proof, &mut vc).is_err());
+    }
+}
+
+fn prefix(limit: usize, r: &[E]) -> E {
+    if limit == 0 {
+        return E::ZERO;
+    }
+    if limit >= 1usize << r.len() {
+        return E::ONE;
+    }
+    let half = 1usize << (r.len() - 1);
+    let top = r[r.len() - 1];
+    if limit <= half {
+        (E::ONE - top) * prefix(limit, &r[..r.len() - 1])
+    } else {
+        E::ONE - top + top * prefix(limit - half, &r[..r.len() - 1])
     }
 }

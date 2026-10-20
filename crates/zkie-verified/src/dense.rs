@@ -1,7 +1,8 @@
-//! Committed multi-layer fixed-point inference. No activation or weight arrays
-//! are passed to verification. All constraints are derived from the pinned key.
+#[cfg(feature = "prover")]
+use crate::backend::F;
+// Committed multi-layer fixed-point inference. No activation or weight arrays
+// are passed to verification. All constraints are derived from the pinned key.
 use crate::{
-    backend::F,
     model::signed,
     oracle::{self as o, Coordinate as C, Factor as X, Relation, Tensor, View},
     whir_backend::{self as wb, Challenge as E},

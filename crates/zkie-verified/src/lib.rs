@@ -91,3 +91,6 @@ mod whir_backend;
 mod oracle;
 
 pub mod dense;
+
+pub use oracle::Tensor as TensorCommitment;
+pub mod lookup;
