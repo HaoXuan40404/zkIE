@@ -23,7 +23,7 @@ impl Tensor {
         self.len == 0
     }
     pub fn validate(&self) -> Result<(), Error> {
-        if !self.len.is_power_of_two() || self.len > (1 << 25) || self.root.num_roots() != 1 {
+        if !self.len.is_power_of_two() || self.len > (1 << 27) || self.root.num_roots() != 1 {
             return Err(Error::InvalidModel);
         }
         Ok(())
@@ -44,7 +44,7 @@ pub(crate) fn commit(values: Vec<F>) -> Result<std::sync::Arc<Data>, Error> {
     use p3_commit::MultilinearPcs;
     use p3_matrix::dense::RowMajorMatrix;
     use p3_sumcheck::layout::{Layout, SuffixProver, Table};
-    if !values.len().is_power_of_two() || values.len() > (1 << 25) {
+    if !values.len().is_power_of_two() || values.len() > (1 << 27) {
         return Err(Error::InvalidModel);
     }
     let vars = values.len().trailing_zeros().max(5) as usize;
@@ -153,12 +153,12 @@ fn interpolate(values: &[E], r: E) -> E {
     value
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Coordinate {
     Var(usize),
     Bit(bool),
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct View {
     pub tensor: usize,
     pub coordinates: Vec<Coordinate>,
@@ -254,7 +254,7 @@ pub(crate) struct Relation {
 }
 impl Relation {
     fn validate(&self, tensors: &[Tensor]) -> Result<(), Error> {
-        if self.log > 25
+        if self.log > 27
             || self.terms.is_empty()
             || self
                 .terms
@@ -281,7 +281,7 @@ impl Relation {
                     }
                 }
                 Factor::Index { start, bits } | Factor::Prefix { start, bits, .. } => {
-                    if *bits > 25 || start + bits > self.log {
+                    if *bits > 27 || start + bits > self.log {
                         return Err(Error::InvalidModel);
                     }
                 }

@@ -164,7 +164,7 @@ fn factors(ids: &[usize], log: usize) -> Vec<X> {
         .map(|&i| X::Oracle(View::identity(i, log)))
         .collect()
 }
-fn relation(
+pub(crate) fn relation(
     log: usize,
     mut fs: Vec<X>,
     terms: Vec<(E, Vec<usize>)>,
@@ -187,7 +187,7 @@ fn relation(
             .collect(),
     }
 }
-fn range(
+pub(crate) fn range(
     tensor: usize,
     bits: usize,
     width: usize,

@@ -94,3 +94,5 @@ pub mod dense;
 
 pub use oracle::Tensor as TensorCommitment;
 pub mod lookup;
+
+pub mod graph;
