@@ -84,3 +84,6 @@ pub fn verify(
 
 #[cfg(all(test, feature = "prover"))]
 mod security_tests;
+
+pub mod matmul;
+mod whir_backend;
