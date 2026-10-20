@@ -66,3 +66,11 @@ MoE and chain verification is not implied by passing these small-network gates.
   https://microsoft.github.io/vega-prover/building-blocks/sumcheck.html
 - WHIR (future committed-weight/reduction integration):
   https://eprint.iacr.org/2024/1586
+
+## Stage B evidence
+
+`cargo +1.94.1 test --release -p zkie-core --lib common::logup_gkr --locked`:
+6 passed. New regressions reject missing layers, forged/zero roots, bad challenge
+lengths, zero denominators, invalid input lengths and out-of-range lookup indices.
+The terminal fraction is now checked against the recomputed tree root. This repair
+alone does not fix legacy prover-selected challenges or make that route succinct.
