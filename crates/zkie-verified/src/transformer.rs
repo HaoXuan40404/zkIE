@@ -37,7 +37,7 @@ impl Config {
     }
     pub fn validate(&self) -> Result<(), Error> {
         if !self.sequence.is_power_of_two()
-            || self.sequence > 512
+            || self.sequence > 32
             || !self.width.is_power_of_two()
             || self.width > 1024
             || self.real_width == 0

@@ -98,6 +98,9 @@ def main():
         shutil.copyfile(producer/'trusted'/'key.bin', consumer/'key.bin')
         shutil.copyfile(req, consumer/'request.json')
         binary = consumer/'verify'; shutil.copyfile(verifier,binary); binary.chmod(0o755)
+        # Reject malformed quantized files instead of ignoring a partial i32.
+        (weights/'exp_table_i32.bin').write_bytes(b'\x01')
+        call([prover, 'inspect', config, weights], producer, False)
         # Verification has no access to the producer's weights or proving binary.
         shutil.rmtree(producer)
         command = [binary,'verify',consumer/'key.bin',trusted['model_id'],consumer/'request.json',consumer/'statement.json',consumer/'proof.bin']

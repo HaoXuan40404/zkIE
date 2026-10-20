@@ -16,6 +16,7 @@ const DOMAIN: &[u8] = b"zkie/integer-graph/v1\0";
 const MAGIC: &[u8; 8] = b"ZKIEGR01";
 const MODULUS: u128 = 18446744069414584321;
 const MAX_NODES: usize = 32768;
+const MAX_PROOF_BYTES: usize = 512 << 20;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum Range {
@@ -245,9 +246,18 @@ impl Program {
                     if get(*input)?.len != node.len || *divisor == 0 || *divisor > (1 << 32) {
                         return Err(Error::InvalidModel);
                     }
-                    bound = bound * (*divisor as u128)
+                    let width = (64 - (divisor - 1).leading_zeros() as usize).max(1);
+                    let rmax = (1u128 << width) - 1;
+                    let half = if matches!(node.operation, Operation::Round { nearest: true, .. }) {
+                        divisor / 2
+                    } else {
+                        0
+                    };
+                    bound = (bound * (*divisor as u128)
                         + get(*input)?.range.bound()
-                        + 2 * (*divisor as u128);
+                        + half as u128
+                        + rmax)
+                        .max(2 * rmax + *divisor as u128 - 1);
                 }
                 Operation::Relu { input } => {
                     let x = get(*input)?;
@@ -655,7 +665,7 @@ pub fn verify(
     if key.id()? != expected_id {
         return Err(Error::InvalidModel);
     }
-    if bytes.len() > 512 << 20 {
+    if bytes.len() > MAX_PROOF_BYTES {
         return Err(Error::ProofTooLarge);
     }
     catch_unwind(AssertUnwindSafe(|| {
@@ -1107,6 +1117,9 @@ fn prove_values(
     };
     let mut bytes = MAGIC.to_vec();
     bytes.extend(postcard::to_allocvec(&p).map_err(|_| Error::ProofEncoding)?);
+    if bytes.len() > MAX_PROOF_BYTES {
+        return Err(Error::ProofTooLarge);
+    }
     Ok((s, bytes))
 }
 #[cfg(all(test, feature = "prover"))]
@@ -1201,6 +1214,145 @@ mod tests {
         let mut p = fixture().1.program;
         p.nodes[0].range = Range::Signed(62);
         p.nodes[1].range = Range::Signed(62);
+        assert!(p.validate().is_err());
+    }
+}
+
+#[cfg(all(test, feature = "prover"))]
+mod transformer_gate_attacks {
+    use super::*;
+    fn fixture() -> (ProvingKey, VerifierKey) {
+        let nodes = vec![
+            Node {
+                len: 4,
+                range: Range::Signed(6),
+                operation: Operation::Input,
+            },
+            Node {
+                len: 4,
+                range: Range::Unsigned(6),
+                operation: Operation::Relu { input: 0 },
+            },
+            Node {
+                len: 4,
+                range: Range::Unsigned(3),
+                operation: Operation::Constant,
+            },
+            Node {
+                len: 4,
+                range: Range::Unsigned(6),
+                operation: Operation::DividePositive {
+                    numerator: 1,
+                    denominator: 2,
+                },
+            },
+            Node {
+                len: 1,
+                range: Range::Unsigned(8),
+                operation: Operation::SumRows {
+                    input: 3,
+                    columns: 4,
+                    actual_columns: 3,
+                },
+            },
+            Node {
+                len: 4,
+                range: Range::Signed(6),
+                operation: Operation::Round {
+                    input: 0,
+                    divisor: 3,
+                    nearest: true,
+                },
+            },
+            Node {
+                len: 4,
+                range: Range::Signed(7),
+                operation: Operation::Linear {
+                    terms: vec![(1, Source::identity(3, 4)), (1, Source::identity(5, 4))],
+                    constant: 0,
+                },
+            },
+        ];
+        prepare(Program { nodes, output: 6 }, vec![(2, vec![1, 2, 3, 7])]).unwrap()
+    }
+    #[test]
+    fn sign_non_power_of_two_remainders_and_masked_reductions_are_constrained() {
+        let (pk, key) = fixture();
+        let input = vec![-17, -4, 5, 17];
+        let (s, bytes) = prove(&pk, input.clone(), [2; 32]).unwrap();
+        assert_eq!(s.output, vec![-6, -1, 4, 8]);
+        verify(&key, key.id().unwrap(), &s, &bytes).unwrap();
+        // Each modified prover regenerates all auxiliary commitments/proofs.
+        // The output alone cannot distinguish the hidden row-reduction attack.
+        for id in [1, 3, 4, 5] {
+            let mut v = evaluate(&pk, &input).unwrap();
+            v[id][0] += 1;
+            let (s, bad) = prove_values(&pk, input.clone(), [2; 32], v).unwrap();
+            assert!(
+                verify(&key, key.id().unwrap(), &s, &bad).is_err(),
+                "accepted forged node {id}"
+            );
+        }
+        let mut p: Proof = postcard::from_bytes(&bytes[8..]).unwrap();
+        p.gates[3] = GateProof::None;
+        let mut bad = MAGIC.to_vec();
+        bad.extend(postcard::to_allocvec(&p).unwrap());
+        assert!(verify(&key, key.id().unwrap(), &s, &bad).is_err());
+    }
+    #[test]
+    fn zero_softmax_denominator_cannot_be_hidden_by_a_modified_prover() {
+        let (_, key) = fixture();
+        let (pk, key) = prepare(key.program, vec![(2, vec![0; 4])]).unwrap();
+        let input = vec![-17, -4, 5, 17];
+        assert!(prove(&pk, input.clone(), [0; 32]).is_err());
+        let values = vec![
+            input.clone(),
+            vec![0, 0, 5, 17],
+            vec![0; 4],
+            vec![0; 4],
+            vec![0],
+            vec![-6, -1, 2, 6],
+            vec![-6, -1, 2, 6],
+        ];
+        let (s, bad) = prove_values(&pk, input, [0; 32], values).unwrap();
+        assert!(verify(&key, key.id().unwrap(), &s, &bad).is_err());
+    }
+    #[test]
+    fn malformed_programs_reject_before_proving() {
+        let (_, key) = fixture();
+        let mut p = key.program.clone();
+        p.nodes[1].operation = Operation::Relu { input: 2 };
+        assert!(p.validate().is_err());
+        let mut p = key.program.clone();
+        p.nodes[5].operation = Operation::Round {
+            input: 0,
+            divisor: 0,
+            nearest: true,
+        };
+        assert!(p.validate().is_err());
+        let mut p = key.program.clone();
+        p.nodes[6].operation = Operation::Linear {
+            terms: vec![(
+                1,
+                Source {
+                    tensor: 0,
+                    coordinates: vec![Bit::Variable(0), Bit::Variable(0)],
+                },
+            )],
+            constant: 0,
+        };
+        assert!(p.validate().is_err());
+        let mut p = key.program.clone();
+        p.nodes[4].operation = Operation::SumRows {
+            input: 3,
+            columns: 4,
+            actual_columns: 5,
+        };
+        assert!(p.validate().is_err());
+        let mut p = key.program;
+        p.nodes[1].operation = Operation::Relu { input: 0 };
+        p.nodes[0].operation = Operation::Constant;
+        p.nodes[2].operation = Operation::Input;
         assert!(p.validate().is_err());
     }
 }
