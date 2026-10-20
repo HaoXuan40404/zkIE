@@ -1,10 +1,11 @@
 //! Committed multi-layer fixed-point inference. No activation or weight arrays
 //! are passed to verification. All constraints are derived from the pinned key.
 use crate::{
-    backend::{Challenge as E, F},
+    backend::F,
     model::signed,
     oracle::{self as o, Coordinate as C, Factor as X, Relation, Tensor, View},
-    whir_backend as wb, Error,
+    whir_backend::{self as wb, Challenge as E},
+    Error,
 };
 use p3_challenger::CanObserve;
 use p3_field::{Field, PrimeCharacteristicRing};
@@ -12,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-const DOMAIN: &[u8] = b"zkie/committed-dense/v1\0";
-const MAGIC: &[u8; 8] = b"ZKIEDN01";
+const DOMAIN: &[u8] = b"zkie/committed-dense/v2\0";
+const MAGIC: &[u8; 8] = b"ZKIEDN02";
 #[derive(Clone, Serialize, Deserialize)]
 struct LayerKey {
     k: usize,
@@ -30,7 +31,7 @@ pub struct VerifierKey {
 }
 impl VerifierKey {
     fn validate(&self) -> Result<(), Error> {
-        if self.version != 1 || self.layers.is_empty() || self.layers.len() > 32 {
+        if self.version != 2 || self.layers.is_empty() || self.layers.len() > 32 {
             return Err(Error::InvalidModel);
         }
         let mut previous = self.layers[0].k;
@@ -420,7 +421,7 @@ pub fn prepare(layers: Vec<Layer>) -> Result<(ProvingKey, VerifierKey), Error> {
         data.extend([w, b]);
     }
     let key = VerifierKey {
-        version: 1,
+        version: 2,
         layers: keys,
     };
     key.validate()?;

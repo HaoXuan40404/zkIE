@@ -1,9 +1,10 @@
 //! Reusable committed weights + sequential sumcheck + a WHIR terminal opening.
 //! Verification never receives weights or intermediate activations.
 use crate::{
-    backend::{Challenge as E, F},
+    backend::F,
     model::signed,
-    whir_backend as wb, Error,
+    whir_backend::{self as wb, Challenge as E},
+    Error,
 };
 use p3_challenger::{CanObserve, FieldChallenger};
 use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing};
@@ -12,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-const DOMAIN: &[u8] = b"zkie/committed-matmul/v1\0";
-const MAGIC: &[u8; 8] = b"ZKIEMM01";
+const DOMAIN: &[u8] = b"zkie/committed-matmul/v2\0";
+const MAGIC: &[u8; 8] = b"ZKIEMM02";
 const LIMIT: usize = 1 << 20;
 const PROOF_LIMIT: usize = 4 << 20;
 
@@ -31,7 +32,7 @@ impl VerifierKey {
     }
     fn validate(&self) -> Result<(), Error> {
         if self.root.num_roots() != 1
-            || self.version != 1
+            || self.version != 2
             || !self.k.is_power_of_two()
             || !self.n.is_power_of_two()
             || self.k.checked_mul(self.n).is_none_or(|n| n > LIMIT)
@@ -254,7 +255,7 @@ pub fn prepare(k: usize, n: usize, weights: Vec<i32>) -> Result<(ProvingKey, Ver
     );
     let (root, data) = pcs.commit(witness, &mut wb::challenger(&pcs, DOMAIN));
     let key = VerifierKey {
-        version: 1,
+        version: 2,
         k,
         n,
         root,

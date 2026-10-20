@@ -1,8 +1,9 @@
 //! Committed tensor constraints. Descriptors are built by the trusted compiler,
 //! never supplied by the proof. Every terminal tensor claim gets a PCS opening.
 use crate::{
-    backend::{Challenge as E, F},
-    whir_backend as wb, Error,
+    backend::F,
+    whir_backend::{self as wb, Challenge as E},
+    Error,
 };
 use p3_challenger::{CanObserve, FieldChallenger};
 use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};

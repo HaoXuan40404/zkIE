@@ -1,5 +1,8 @@
 //! Shared, explicitly parameterized PCS for the witness-free reduction route.
-use crate::backend::{Challenge as E, F};
+use crate::backend::F;
+use p3_field::extension::BinomialExtensionField;
+pub(crate) type Challenge = BinomialExtensionField<F, 5>;
+type E = Challenge;
 use p3_challenger::{CanObserve, DuplexChallenger};
 use p3_commit::MultilinearPcs;
 use p3_dft::Radix2DFTSmallBatch;
@@ -32,7 +35,7 @@ pub(crate) fn pcs(vars: usize) -> Result<Pcs, crate::Error> {
         .compute_number_of_rounds(vars)
         .map_err(|_| crate::Error::InvalidModel)?;
     let params = ProtocolParameters {
-        security_level: 112,
+        security_level: 128,
         pow_bits: 0,
         folding_factor: folding,
         soundness_type: SecurityAssumption::UniqueDecoding,

@@ -36,7 +36,7 @@ def main():
         for name in ["key.bin","statement.json","proof.bin"]:
             shutil.copyfile(producer/"bundle"/name,consumer/name)
         key=(consumer/"key.bin").read_bytes()
-        expected_id=hashlib.sha256(b"zkie/committed-matmul/v1\0"+key).hexdigest()
+        expected_id=hashlib.sha256(b"zkie/committed-matmul/v2\0"+key).hexdigest()
         assert expected_id==prepared["model_id"] and len(key)<256
         (consumer/"request.json").write_text(json.dumps(request))
         shutil.copy2(verifier,consumer/"verify")

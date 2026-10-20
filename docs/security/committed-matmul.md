@@ -1,7 +1,7 @@
-# Committed matrix multiplication, v1
+# Committed matrix multiplication, v2
 
 This route implements C = A W using a reusable WHIR weight commitment and a
-sequential Fiat–Shamir sumcheck over a quadratic Goldilocks extension field.
+sequential Fiat–Shamir sumcheck over a degree-five Goldilocks extension field.
 It is separate from the legacy base-field/XorShift reductions.
 
 `prepare(k,n,weights)` validates and commits W once, returning a reusable in-memory
@@ -44,8 +44,8 @@ bounds are <p/2, so equality also has the intended integer-dot-product meaning.
 The commitment does not independently certify a malicious publisher's weight
 range; publication/preparation validation belongs to model endorsement.
 
-WHIR uses a 112-bit requested UniqueDecoding profile, zero PoW, folding factor 32,
-Goldilocks^2 challenges and upstream Poseidon2 constants. Requested security is
+WHIR uses a 128-bit requested UniqueDecoding profile, zero PoW, folding factor 32,
+Goldilocks^5 challenges and upstream Poseidon2 constants. Requested security is
 not an independent end-to-end audit. The additional reduction error is bounded
 in the interactive model by (log2(m)+log2(n)+2log2(k))/|E|; non-interactive security
 also relies on the Fiat–Shamir/random-oracle treatment and WHIR composition.
@@ -65,3 +65,8 @@ Serialized verifier keys in these cases are under 256 bytes.
 This is a raw matrix-product primitive. Rounding, nonlinearity and graph
 composition still require authenticated constraints; this document does not
 claim that a full Transformer now uses this verifier.
+
+The v2 reduction profile upgrades to Goldilocks^5 before full-model batching,
+so the algebraic error budget does not depend on a nearly exhausted 128-bit
+challenge field. The hash/PCS assumptions still cap security; extension size
+alone is not a whole-protocol security estimate. v1 keys/proofs are rejected.
