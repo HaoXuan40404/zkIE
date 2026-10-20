@@ -96,3 +96,6 @@ pub use oracle::Tensor as TensorCommitment;
 pub mod lookup;
 
 pub mod graph;
+
+#[cfg(feature = "prover")]
+pub mod transformer;

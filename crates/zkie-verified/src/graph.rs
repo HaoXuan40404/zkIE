@@ -8,7 +8,7 @@ use crate::{
     Error,
 };
 use p3_challenger::CanObserve;
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{Field, PrimeCharacteristicRing};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -145,6 +145,18 @@ pub enum Operation {
         divisor: u64,
         nearest: bool,
     },
+    Relu {
+        input: usize,
+    },
+    SumRows {
+        input: usize,
+        columns: usize,
+        actual_columns: usize,
+    },
+    DividePositive {
+        numerator: usize,
+        denominator: usize,
+    },
     Lookup {
         indices: usize,
         table: usize,
@@ -163,7 +175,7 @@ pub struct Program {
     pub output: usize,
 }
 impl Program {
-    fn validate(&self) -> Result<(), Error> {
+    pub fn validate(&self) -> Result<(), Error> {
         if self.nodes.is_empty() || self.nodes.len() > MAX_NODES || self.output >= self.nodes.len()
         {
             return Err(Error::InvalidModel);
@@ -173,10 +185,11 @@ impl Program {
             node.range.validate()?;
             if !node.len.is_power_of_two()
                 || node.len > (1 << 26)
-                || node
-                    .len
-                    .checked_mul(node.range.width().next_power_of_two())
-                    .is_none_or(|n| n > (1 << 27))
+                || (!matches!(node.operation, Operation::Constant)
+                    && node
+                        .len
+                        .checked_mul(node.range.width().next_power_of_two())
+                        .is_none_or(|n| n > (1 << 27)))
             {
                 return Err(Error::InvalidModel);
             }
@@ -235,6 +248,50 @@ impl Program {
                     bound = bound * (*divisor as u128)
                         + get(*input)?.range.bound()
                         + 2 * (*divisor as u128);
+                }
+                Operation::Relu { input } => {
+                    let x = get(*input)?;
+                    if x.len != node.len
+                        || !matches!(x.range, Range::Signed(_))
+                        || matches!(x.operation, Operation::Constant)
+                    {
+                        return Err(Error::InvalidModel);
+                    }
+                    bound += x.range.bound();
+                }
+                Operation::SumRows {
+                    input,
+                    columns,
+                    actual_columns,
+                } => {
+                    let x = get(*input)?;
+                    if !columns.is_power_of_two()
+                        || *actual_columns == 0
+                        || actual_columns > columns
+                        || node.len.checked_mul(*columns) != Some(x.len)
+                    {
+                        return Err(Error::InvalidModel);
+                    }
+                    bound += x.range.bound() * (*actual_columns as u128);
+                }
+                Operation::DividePositive {
+                    numerator,
+                    denominator,
+                } => {
+                    let a = get(*numerator)?;
+                    let b = get(*denominator)?;
+                    if a.len != node.len
+                        || b.len != node.len
+                        || !matches!(a.range, Range::Unsigned(_))
+                        || !matches!(b.range, Range::Unsigned(1..=60))
+                        || !matches!(node.range, Range::Unsigned(_))
+                    {
+                        return Err(Error::InvalidModel);
+                    }
+                    bound = 2 * a.range.bound()
+                        + 2 * b.range.bound() * node.range.bound()
+                        + 8 * b.range.bound()
+                        + 1;
                 }
                 Operation::Lookup {
                     indices,
@@ -375,6 +432,17 @@ fn layout(program: &Program) -> Layout {
             ]);
             round[id] = Some((r, r + 1, r + 2, r + 3));
         }
+        if let Operation::DividePositive { denominator, .. } = node.operation {
+            let width = program.nodes[denominator].range.width() + 1;
+            let r = lengths.len();
+            lengths.extend([
+                node.len,
+                node.len,
+                node.len * width.next_power_of_two(),
+                node.len * width.next_power_of_two(),
+            ]);
+            round[id] = Some((r, r + 1, r + 2, r + 3));
+        }
     }
     Layout {
         bits,
@@ -404,7 +472,13 @@ fn f(x: i64) -> F {
 fn e(x: i64) -> E {
     E::from(f(x))
 }
-fn gate_relation(node: &Node, id: usize, c: &mut wb::Challenger) -> Option<o::Relation> {
+fn gate_relation(
+    node: &Node,
+    id: usize,
+    program: &Program,
+    l: &Layout,
+    c: &mut wb::Challenger,
+) -> Option<o::Relation> {
     let log = node.len.trailing_zeros() as usize;
     let mut fs = vec![X::Oracle(View::identity(id, log))];
     let mut terms = vec![(E::ONE, vec![0])];
@@ -424,6 +498,50 @@ fn gate_relation(node: &Node, id: usize, c: &mut wb::Challenger) -> Option<o::Re
             fs.push(X::Oracle(a.view()));
             fs.push(X::Oracle(b.view()));
             terms.push((-E::ONE, vec![1, 2]));
+        }
+        Operation::Relu { input } => {
+            fs.push(X::Oracle(View::identity(*input, log)));
+            let width = program.nodes[*input].range.width();
+            let mut view = View::identity(l.bits[*input].unwrap(), log);
+            view.coordinates.extend(
+                (0..width.next_power_of_two().trailing_zeros())
+                    .map(|b| C::Bit(((width - 1) >> b) & 1 == 1)),
+            );
+            fs.push(X::Oracle(view));
+            terms.push((-E::ONE, vec![1, 2]));
+        }
+        Operation::SumRows {
+            input,
+            columns,
+            actual_columns,
+        } => {
+            let cb = columns.trailing_zeros() as usize;
+            let total = log + cb;
+            let eq = X::Eq {
+                point: o::sample(c, log),
+                start: cb,
+            };
+            let out = View {
+                tensor: id,
+                coordinates: (cb..total).map(C::Var).collect(),
+            };
+            return Some(o::Relation {
+                log: total,
+                factors: vec![
+                    X::Oracle(View::identity(*input, total)),
+                    X::Oracle(out),
+                    X::Prefix {
+                        start: 0,
+                        bits: cb,
+                        limit: *actual_columns,
+                    },
+                    eq,
+                ],
+                terms: vec![
+                    (E::ONE, vec![0, 2, 3]),
+                    (-E::from_usize(*columns).inverse(), vec![1, 3]),
+                ],
+            });
         }
         _ => return None,
     }
@@ -476,6 +594,55 @@ fn round_relations(
     out.extend(dense::range(r, rb, width, 0, log, c));
     out.extend(dense::range(d, db, width, 0, log, c));
     out
+}
+fn divide_relations(
+    node: &Node,
+    id: usize,
+    program: &Program,
+    aux: (usize, usize, usize, usize),
+    c: &mut wb::Challenger,
+) -> Vec<o::Relation> {
+    let Operation::DividePositive {
+        numerator,
+        denominator,
+    } = node.operation
+    else {
+        unreachable!()
+    };
+    let (r, d, rb, db) = aux;
+    let log = node.len.trailing_zeros() as usize;
+    let width = program.nodes[denominator].range.width() + 1;
+    let fs = [numerator, denominator, id, r, d]
+        .into_iter()
+        .map(|i| X::Oracle(View::identity(i, log)))
+        .collect::<Vec<_>>();
+    let mut rs = vec![
+        dense::relation(
+            log,
+            fs.clone(),
+            vec![
+                (E::TWO, vec![0]),
+                (E::ONE, vec![1]),
+                (-E::TWO, vec![1, 2]),
+                (-E::ONE, vec![3]),
+            ],
+            c,
+        ),
+        dense::relation(
+            log,
+            fs,
+            vec![
+                (E::ONE, vec![3]),
+                (E::ONE, vec![4]),
+                (-E::TWO, vec![1]),
+                (E::ONE, vec![]),
+            ],
+            c,
+        ),
+    ];
+    rs.extend(dense::range(r, rb, width, 0, log, c));
+    rs.extend(dense::range(d, db, width, 0, log, c));
+    rs
 }
 /// The expected model id must come from the verifier's own configuration.
 pub fn verify(
@@ -559,11 +726,14 @@ pub fn verify(
             match (&node.operation, &p.gates[id]) {
                 (Operation::Input | Operation::Constant, GateProof::None) => {}
                 (
-                    Operation::Linear { .. } | Operation::Product { .. },
+                    Operation::Linear { .. }
+                    | Operation::Product { .. }
+                    | Operation::Relu { .. }
+                    | Operation::SumRows { .. },
                     GateProof::Relation(proof),
                 ) => {
                     o::verify_relation(
-                        &gate_relation(node, id, &mut c).unwrap(),
+                        &gate_relation(node, id, &key.program, &l, &mut c).unwrap(),
                         &p.tensors,
                         proof,
                         &mut c,
@@ -574,6 +744,15 @@ pub fn verify(
                 }
                 (Operation::Round { .. }, GateProof::Round(proofs)) => {
                     let rs = round_relations(node, id, l.round[id].unwrap(), &mut c);
+                    if rs.len() != proofs.len() {
+                        return Err(Error::InvalidProof);
+                    }
+                    for (r, proof) in rs.iter().zip(proofs) {
+                        o::verify_relation(r, &p.tensors, proof, &mut c)?;
+                    }
+                }
+                (Operation::DividePositive { .. }, GateProof::Round(proofs)) => {
+                    let rs = divide_relations(node, id, &key.program, l.round[id].unwrap(), &mut c);
                     if rs.len() != proofs.len() {
                         return Err(Error::InvalidProof);
                     }
@@ -710,6 +889,36 @@ fn evaluate(pk: &ProvingKey, input: &[i64]) -> Result<Vec<Vec<i64>>, Error> {
                         .div_euclid(*divisor as i128)) as i64
                 })
                 .collect(),
+            Operation::Relu { input } => values[*input].iter().map(|&x| x.max(0)).collect(),
+            Operation::SumRows {
+                input,
+                columns,
+                actual_columns,
+            } => values[*input]
+                .chunks_exact(*columns)
+                .map(|row| {
+                    i64::try_from(
+                        row[..*actual_columns]
+                            .iter()
+                            .map(|&x| x as i128)
+                            .sum::<i128>(),
+                    )
+                    .map_err(|_| Error::InvalidStatement)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Operation::DividePositive {
+                numerator,
+                denominator,
+            } => values[*numerator]
+                .iter()
+                .zip(&values[*denominator])
+                .map(|(&a, &b)| {
+                    if b <= 0 {
+                        return Err(Error::InvalidStatement);
+                    }
+                    Ok(((2 * a as i128 + b as i128) / (2 * b as i128)) as i64)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
             Operation::Lookup {
                 indices,
                 table,
@@ -794,6 +1003,30 @@ fn prove_values(
             data.push(bit_data(&rem, width, 0)?);
             data.push(bit_data(&delta, width, 0)?);
         }
+        if let Operation::DividePositive {
+            numerator,
+            denominator,
+        } = node.operation
+        {
+            let rem: Vec<i64> = values[numerator]
+                .iter()
+                .zip(&values[denominator])
+                .zip(&values[id])
+                .map(|((&a, &b), &q)| {
+                    (2 * a as i128 + b as i128 - 2 * b as i128 * q as i128) as i64
+                })
+                .collect();
+            let delta: Vec<i64> = values[denominator]
+                .iter()
+                .zip(&rem)
+                .map(|(&b, &r)| 2 * b - 1 - r)
+                .collect();
+            let width = program.nodes[denominator].range.width() + 1;
+            data.push(o::commit(rem.iter().copied().map(f).collect())?);
+            data.push(o::commit(delta.iter().copied().map(f).collect())?);
+            data.push(bit_data(&rem, width, 0)?);
+            data.push(bit_data(&delta, width, 0)?);
+        }
     }
     let tensors: Vec<_> = data.iter().map(|d| d.tensor.clone()).collect();
     let mut c = transcript(&pk.key, &s, &tensors)?;
@@ -824,9 +1057,14 @@ fn prove_values(
         );
         gates.push(match &node.operation {
             Operation::Input | Operation::Constant => GateProof::None,
-            Operation::Linear { .. } | Operation::Product { .. } => GateProof::Relation(
-                o::prove_relation(&gate_relation(node, id, &mut c).unwrap(), &data, &mut c)?,
-            ),
+            Operation::Linear { .. }
+            | Operation::Product { .. }
+            | Operation::Relu { .. }
+            | Operation::SumRows { .. } => GateProof::Relation(o::prove_relation(
+                &gate_relation(node, id, program, &l, &mut c).unwrap(),
+                &data,
+                &mut c,
+            )?),
             Operation::Matmul { a, b, m, k, n } => GateProof::Matmul(Box::new(o::prove_matmul(
                 &data,
                 [*a, *b, id],
@@ -835,6 +1073,12 @@ fn prove_values(
             )?)),
             Operation::Round { .. } => GateProof::Round(
                 round_relations(node, id, l.round[id].unwrap(), &mut c)
+                    .iter()
+                    .map(|r| o::prove_relation(r, &data, &mut c))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Operation::DividePositive { .. } => GateProof::Round(
+                divide_relations(node, id, program, l.round[id].unwrap(), &mut c)
                     .iter()
                     .map(|r| o::prove_relation(r, &data, &mut c))
                     .collect::<Result<Vec<_>, _>>()?,
