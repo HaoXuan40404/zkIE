@@ -7,14 +7,40 @@ use p3_matrix::dense::RowMajorMatrix;
 /// Exact integer reference executor for this bounded profile. Rounding ties
 /// toward +infinity, including negative values. No floating-point arithmetic.
 pub fn evaluate(model: &Model, input: [i32; 2]) -> Result<[i32; 2], Error> {
-    Ok(execute(model, input)?.0)
+    validate_input(model, input)?;
+    let mut values = input;
+    for layer in 0..2 {
+        values = dense(model, values, layer)?.map(|(q, _)| if layer == 0 { q.max(0) } else { q });
+    }
+    Ok(values)
 }
 
-fn execute(model: &Model, input: [i32; 2]) -> Result<([i32; 2], Vec<backend::F>), Error> {
+fn validate_input(model: &Model, input: [i32; 2]) -> Result<(), Error> {
     model.validate()?;
     if input.iter().any(|x| !(-128..=127).contains(x)) {
         return Err(Error::InvalidStatement);
     }
+    Ok(())
+}
+
+fn dense(model: &Model, values: [i32; 2], layer: usize) -> Result<[(i32, i32); 2], Error> {
+    let mut result = [(0, 0); 2];
+    for (j, slot) in result.iter_mut().enumerate() {
+        let raw: i64 = (0..2)
+            .map(|i| i64::from(values[i]) * i64::from(model.weights[layer][j][i]))
+            .sum();
+        let q = i32::try_from((raw + 8).div_euclid(16) + i64::from(model.biases[layer][j]))
+            .map_err(|_| Error::InvalidStatement)?;
+        if !(-256..=255).contains(&q) {
+            return Err(Error::InvalidStatement);
+        }
+        *slot = (q, (raw + 8).rem_euclid(16) as i32);
+    }
+    Ok(result)
+}
+
+fn execute(model: &Model, input: [i32; 2]) -> Result<([i32; 2], Vec<backend::F>), Error> {
+    validate_input(model, input)?;
     let mut row = vec![backend::F::ZERO; air::WIDTH];
     let mut write_bits = |start: usize, len: usize, value: i32| {
         for i in 0..len {
@@ -28,17 +54,7 @@ fn execute(model: &Model, input: [i32; 2]) -> Result<([i32; 2], Vec<backend::F>)
     let mut hidden = [0; 2];
     for layer in 0..2 {
         let mut next = [0; 2];
-        for j in 0..2 {
-            let raw: i64 = (0..2)
-                .map(|i| i64::from(values[i]) * i64::from(model.weights[layer][j][i]))
-                .sum();
-            let rounded = (raw + 8).div_euclid(16);
-            let q = i32::try_from(rounded + i64::from(model.biases[layer][j]))
-                .map_err(|_| Error::InvalidStatement)?;
-            if !(-256..=255).contains(&q) {
-                return Err(Error::InvalidStatement);
-            }
-            let rem = (raw + 8).rem_euclid(16) as i32;
+        for (j, &(q, rem)) in dense(model, values, layer)?.iter().enumerate() {
             write_bits(air::Q_START + (layer * 2 + j) * 9, 9, q + 256);
             write_bits(air::REM_START + (layer * 2 + j) * 4, 4, rem);
             next[j] = if layer == 0 { q.max(0) } else { q };
@@ -140,6 +156,28 @@ mod tests {
             input: [17, -9],
             output,
         };
+        // An attacker may change both the claimed output and the corresponding
+        // witness bits. The rounding/matmul relation must still reject it.
+        let mut false_statement = statement.clone();
+        false_statement.output[0] += 1;
+        let mut dishonest_row = row.clone();
+        let encoded_q = (false_statement.output[0] + 256) as u32;
+        for bit in 0..9 {
+            dishonest_row[air::Q_START + 18 + bit] = backend::F::from_u32((encoded_q >> bit) & 1);
+        }
+        let forged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            p3_uni_stark::prove(
+                &backend::config(),
+                &air::InferenceAir,
+                make_trace(dishonest_row),
+                &m.public_values(&false_statement),
+            )
+        }));
+        if let Ok(proof) = forged {
+            let mut bytes = MAGIC.to_vec();
+            bytes.extend(postcard::to_allocvec(&proof).unwrap());
+            assert!(verify(&m, m.id().unwrap(), &false_statement, &bytes).is_err());
+        }
         // Corrupt input, matrix/rounding output, remainder, ReLU linkage and
         // booleanity, then deliberately run the backend prover anyway.
         for (col, value) in [
@@ -148,6 +186,7 @@ mod tests {
             (air::REM_START, 2),
             (air::H_START, 99),
             (air::Q_START, 1),
+            (air::REM_START, 1),
         ] {
             let mut bad = row.clone();
             bad[col] = if value == 1 {

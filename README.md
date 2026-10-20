@@ -92,6 +92,19 @@ stays on the CPU.
 | Lookup | LogUp fractional sumcheck |
 | Affine (fixed-point rounding) | rounding range check (LogUp) |
 
+## Verified small-network baseline
+
+`crates/zkie-verified` is a separate, bounded 2→2→2 fixed-point/ReLU STARK
+baseline with serialized proofs and a verifier-only binary. It binds the public
+model identity, request, input and output without a forward-pass re-run. It is
+not the proof path used by the Transformer examples or benchmarks below, and is
+not a production-security claim for the legacy GKR implementation.
+
+Run `bash scripts/check_verified.sh` for bounded numeric/adversarial tests and
+independent-process acceptance. See [the crate README](crates/zkie-verified/README.md),
+[protocol](docs/security/small-network-protocol.md) and
+[acceptance report](docs/security/acceptance-report.md).
+
 ## Usage
 
 Each model has its own crate under `models/`. Weights and lookup tables are

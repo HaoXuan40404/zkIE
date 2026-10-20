@@ -1,7 +1,7 @@
 # Verified inference baseline
 
-Status: implementation in progress. This document defines the first acceptance
-milestone; it does not claim that the legacy Transformer/GKR route is hardened.
+Status: the first bounded milestone passes local acceptance. This document
+defines its gates; it does not claim that the legacy Transformer/GKR route is hardened.
 
 ## Statement and trust
 

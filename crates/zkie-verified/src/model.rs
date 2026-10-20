@@ -3,8 +3,8 @@ use p3_field::PrimeCharacteristicRing;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const VERSION: u32 = 1;
-const DOMAIN: &[u8] = b"zkie-verified/dense2x2-q4-relu/stark-v1\0";
+pub const VERSION: u32 = 2;
+const DOMAIN: &[u8] = b"zkie-verified/dense2x2-q4-relu/stark-v2\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelId(pub [u8; 32]);

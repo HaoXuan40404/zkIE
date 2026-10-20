@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import shutil
 import struct
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,7 @@ import tempfile
 
 def model_id(model):
     """Independent implementation of the specified canonical model encoding."""
-    h = hashlib.sha256(b"zkie-verified/dense2x2-q4-relu/stark-v1\0")
+    h = hashlib.sha256(b"zkie-verified/dense2x2-q4-relu/stark-v2\0")
     h.update(struct.pack("<IB", model["version"], model["fractional_bits"]))
     for layer in model["weights"]:
         for row in layer:
@@ -67,19 +68,22 @@ def main():
         consumer.mkdir()
         (producer / "model.json").write_text(json.dumps(model))
         (producer / "request.json").write_text(json.dumps(request))
-        proving = json.loads(command([prover, "model.json", "request.json", "bundle"], producer))
+        proving_samples = [json.loads(command([prover, "model.json", "request.json", f"bundle{i}"], producer))
+                           for i in range(7)]
+        proving = proving_samples[0]
         assert proving["model_id"] == expected_id
         assert proving["output"] == reference(model, request["input"])
         # Transfer only the documented public verification inputs and proof.
         for name in ("model.json", "statement.json", "proof.bin"):
-            shutil.copyfile(producer / "bundle" / name, consumer / name)
+            shutil.copyfile(producer / "bundle0" / name, consumer / name)
         (consumer / "request.json").write_text(json.dumps(request))
         # A local binary in an otherwise empty directory, with producer artifacts
         # gone, cannot find a relative weights/activation tree accidentally.
         shutil.copy2(verifier, consumer / "verify")
         shutil.rmtree(producer)
         args = [consumer / "verify", "model.json", expected_id, "request.json", "statement.json", "proof.bin"]
-        verified = json.loads(command(args, consumer))
+        verified_samples = [json.loads(command(args, consumer)) for _ in range(7)]
+        verified = verified_samples[0]
         assert verified["verified"] is True and verified["output"] == proving["output"]
         assert command([consumer / "verify", "id", "model.json"], consumer).strip() == expected_id
         statement = json.loads((consumer / "statement.json").read_text())
@@ -97,7 +101,11 @@ def main():
             (consumer / "proof.bin").write_bytes(malformed)
             command(args, consumer, success=False)
         print(json.dumps({"acceptance": "passed", "independent_reference": True,
-                          "model_id": expected_id, "prover": proving, "verifier": verified}, indent=2))
+                          "model_id": expected_id, "prover": proving, "verifier": verified,
+                          "measurements": {"samples": 7,
+                              "evaluate_ns_median": statistics.median(p["evaluate_ns"] for p in proving_samples),
+                              "prove_us_median": statistics.median(p["prove_us"] for p in proving_samples),
+                              "verify_us_median": statistics.median(v["verify_us"] for v in verified_samples)}}, indent=2))
 
 
 if __name__ == "__main__":

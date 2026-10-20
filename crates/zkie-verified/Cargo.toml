@@ -36,3 +36,6 @@ required-features = ["prover"]
 [[bin]]
 name = "zkie-verify"
 path = "src/bin/zkie-verify.rs"
+
+[dev-dependencies]
+p3-security = "=0.7.0"

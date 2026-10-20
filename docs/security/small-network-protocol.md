@@ -1,4 +1,4 @@
-# Small-network protocol v1
+# Small-network protocol v2
 
 ## Scope and statement
 
@@ -59,7 +59,7 @@ not a machine-checked theorem about the Rust implementation.
 
 The proof uses pinned Plonky3 0.7.0 uni-STARK, TwoAdicFriPcs, Goldilocks,
 degree-two extension challenges, Poseidon2Goldilocks<16> with upstream default
-constants, an eight-field-element Merkle digest, blowup 8, 64 FRI queries,
+constants, an eight-field-element Merkle digest, blowup 8, 128 FRI queries,
 final polynomial length 1, binary folding and no proof of work. The decoder
 enforces the eight-row degree and this configuration is not proof-controlled.
 
@@ -84,7 +84,7 @@ dependency surface and needs independent review alongside upstream dependencies.
 
 ## Encoding, separation and remaining costs
 
-Proofs have an eight-byte `ZKIESTK1` header and canonical postcard payload, capped
+Proofs have an eight-byte `ZKIESTK2` header and canonical postcard payload, capped
 at 1 MiB; trailing or noncanonical encodings and wrong degree are rejected.
 Dependency decoding/verification panics fail closed via catch_unwind, which does
 not catch process abort/OOM. Services still need OS resource limits. Format and
@@ -103,3 +103,15 @@ Release-mode unit tests exercise an honest serialization round trip, altered
 input/output/context/version/model binding, and modified-prover construction
 of invalid boolean bits, rounding outputs, remainders and ReLU witnesses.
 Stage D/E add independent-process, parser and numerical-reference evidence.
+
+
+## Accepted v2 parameter gate
+
+Stage E upgraded the development profile from 64 to 128 FRI queries and changed
+its version/domain/header to v2. Plonky3's estimator includes the symbolically
+counted 78 degree-two constraints and 72 batched base-field functions. Using a
+conservative 127-bit extension-size input and a 128-bit collision cap yields
+103 unique-decoding bits / 101 list-decoding bits; a regression requires >=96
+estimated backend bits. This is conditional parameter evidence, not an
+independent whole-system security proof. See `acceptance-report.md` for exact
+local tests, measurements, limitations and reproducibility commands.

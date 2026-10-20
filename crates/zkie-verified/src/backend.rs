@@ -8,12 +8,14 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_uni_stark::StarkConfig;
 
+pub(crate) const FRI_QUERIES: usize = 128;
+
 pub(crate) type F = Goldilocks;
 type Perm = Poseidon2Goldilocks<16>;
 type Hash = PaddingFreeSponge<Perm, 16, 8, 8>;
 type Compress = TruncatedPermutation<Perm, 2, 8, 16>;
 type ValMmcs = MerkleTreeMmcs<<F as Field>::Packing, <F as Field>::Packing, Hash, Compress, 2, 8>;
-type Challenge = BinomialExtensionField<F, 2>;
+pub(crate) type Challenge = BinomialExtensionField<F, 2>;
 type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
 type Challenger = DuplexChallenger<F, Perm, 16, 8>;
 type Pcs = TwoAdicFriPcs<F, Radix2DitParallel<F>, ValMmcs, ChallengeMmcs>;
@@ -28,7 +30,7 @@ pub(crate) fn config() -> Config {
         log_blowup: 3,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: 64,
+        num_queries: FRI_QUERIES,
         commit_proof_of_work_bits: 0,
         query_proof_of_work_bits: 0,
         mmcs: ChallengeMmcs::new(mmcs.clone()),

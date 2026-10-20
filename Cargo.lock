@@ -1173,6 +1173,7 @@ dependencies = [
  "p3-goldilocks",
  "p3-matrix",
  "p3-merkle-tree",
+ "p3-security",
  "p3-symmetric",
  "p3-uni-stark",
  "postcard",

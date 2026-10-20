@@ -41,7 +41,7 @@ To use the fixture manually, from the repository root:
 ```sh
 target/release/zkie-prove crates/zkie-verified/fixtures/model.json crates/zkie-verified/fixtures/request.json /tmp/zkie-new-bundle
 
-target/verified-verifier/release/zkie-verify /tmp/zkie-new-bundle/model.json 922fbe3ec1076c9b8f2bdcf93587c29b19c21ad57d3724cde4fd2d8583ed7fbd crates/zkie-verified/fixtures/request.json /tmp/zkie-new-bundle/statement.json /tmp/zkie-new-bundle/proof.bin
+target/verified-verifier/release/zkie-verify /tmp/zkie-new-bundle/model.json 1143edd7832d9a74c700a73bbd23c52db6efaa33352d96c268c90797fed87428 crates/zkie-verified/fixtures/request.json /tmp/zkie-new-bundle/statement.json /tmp/zkie-new-bundle/proof.bin
 ```
 
 The output directory must not exist. The trusted id above is specific to the

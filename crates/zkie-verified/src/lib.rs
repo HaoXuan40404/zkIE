@@ -20,7 +20,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Fixed framing and limits are protocol parameters, not chosen by a proof.
 pub const MAX_PROOF_BYTES: usize = 1 << 20;
-pub(crate) const MAGIC: &[u8; 8] = b"ZKIESTK1";
+pub(crate) const MAGIC: &[u8; 8] = b"ZKIESTK2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -81,3 +81,6 @@ pub fn verify(
     }))
     .unwrap_or(Err(Error::InvalidProof))
 }
+
+#[cfg(all(test, feature = "prover"))]
+mod security_tests;

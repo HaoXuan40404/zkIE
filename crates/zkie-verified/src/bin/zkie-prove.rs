@@ -22,7 +22,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let id = model.id()?;
     let start = Instant::now();
     let expected = evaluate(&model, request.input)?;
-    let evaluate_us = start.elapsed().as_micros();
+    let evaluate_ns = start.elapsed().as_nanos();
     let start = Instant::now();
     let (statement, proof) = prove(&model, request.input, request.context)?;
     let prove_us = start.elapsed().as_micros();
@@ -42,7 +42,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::json!({"model_id": id.to_hex(), "output": statement.output,
-        "proof_bytes": proof.len(), "evaluate_us": evaluate_us, "prove_us": prove_us})
+        "proof_bytes": proof.len(), "evaluate_ns": evaluate_ns, "prove_us": prove_us})
     );
     Ok(())
 }
