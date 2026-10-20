@@ -87,3 +87,7 @@ mod security_tests;
 
 pub mod matmul;
 mod whir_backend;
+
+mod oracle;
+
+pub mod dense;
