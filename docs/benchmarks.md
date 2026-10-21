@@ -435,3 +435,34 @@ demand), so the kernel pages them in/out instead of keeping them resident. That
 lets the full 64-thread pool run without OOM, cutting prove from ~77 min (8
 threads) to ~26.5 min. `verify` recomputes the witness in-place (no store clone), so it no longer
 doubles memory.
+
+
+## Store-free verification (P0-P4) (2026-10-22)
+
+The verifier no longer re-runs the forward pass and reads no Store / witness.
+Challenges are derived from a Fiat-Shamir transcript, each op verifier uses the
+claimed evaluations written into the proof, and the entry points take only
+(statement, lookup tables, proof bytes). The plain `verify_shard_dag` /
+`verify_shard_dag_bytes` path is functionally store-free; full soundness against
+a lying prover is the committed path (`prove_committed_shard_dag` /
+`verify_committed_shard_dag`, P3), which verifies WHIR openings for weights and
+shard boundaries and is covered by the store-free soundness unit tests (tampered
+boundary / weight / opening all rejected).
+
+Release build, 64-thread CPU. Same per-layer shard granularities as the
+op-primitive rows above.
+
+| model | seq | shards | prove | verify | total | argmax | peak RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| TimesFM 1.0 200M | 16 | 108 ops/shard | 14.9 s | 2.9 s | ~17.8 s | - | ~17.3 GB |
+| GPT-2 124M | 16 | 13 (per layer) | 11.8 s | 4.8 s | ~16.6 s | 16/16 | - |
+| GPT-2 124M | 512 | 13 (per layer) | 26.5 s | 6.3 s | ~32.8 s | 511/512 | - |
+| Gemma 3 270M | 16 | 22 (per layer) | 16.8 s | 4.7 s | ~21.5 s | 16/16 | ~37.1 GB |
+| Gemma 3 270M | 512 | 22 (per layer) | 40.5 s | 11.1 s | ~51.6 s | 505/512 | ~35.4 GB |
+
+Store-free verification drops verify time 3-6x versus the forward-recompute
+path above (GPT-2 512 verify 19.4 s -> 6.3 s; Gemma 3 512 verify 35.7 s ->
+11.1 s), because the verifier no longer recomputes the witness. Prove time also
+improved on this branch via batch LogUp / batch opening (GPT-2 512 prove
+47.8 s -> 26.5 s; Gemma 3 512 prove 73.0 s -> 40.5 s). Peak RSS for Gemma 3
+rose (~25.6 -> ~37.1 GB at seq=16) and is tracked as a follow-up.

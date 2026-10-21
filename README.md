@@ -30,13 +30,14 @@ time and memory, both still far above the cost of the inference itself.
 **How it is used.** Export the model to ONNX — architecture, weights and op
 graph — and zkIE composes the proving logic for that model's inference circuit
 out of op-level proof primitives. For any input, that circuit then yields a
-proof that the output is what the model computes. Today the verifier still
-recomputes the forward pass to obtain its interior evaluations (`verify_shard` /
-`verify_shard_dag`, `compose.rs`), so verifying costs about as much as proving
-(measured: verify ~90% of prove at seq=512, CPU); making verification succinct,
-with no re-run, is the open design item tracked in #15. Weights and activations
-are public: the current route targets correctness and succinctness rather than
-witness hiding.
+proof that the output is what the model computes. The verifier no longer
+re-runs the forward pass: it checks the proof against the statement, the lookup
+tables, and the commitment roots (`verify_shard_dag` / `verify_committed_shard_dag`,
+`compose.rs`), so verifying is now a small fraction of proving (measured: verify
+~25% of prove at seq=512, CPU). The plain path reads no witness or Store; the
+fully-sound path additionally verifies WHIR openings for weights and shard
+boundaries. Weights and activations are public: the current route targets
+correctness and succinctness rather than witness hiding.
 
 ## How it works
 
@@ -129,11 +130,11 @@ is in [`docs/benchmarks.md`](docs/benchmarks.md).
 
 | Model | Active / Total params | Setup | Prove | Verify | Peak RSS |
 | --- | --- | --- | --- | --- | --- |
-| TimesFM 1.0 200M | 200M / 200M | seq=16, 108 ops/shard | ~77.5 s | ~10.7 s | ~24.1 GB |
-| GPT-2 124M | 124M / 124M | seq=16, 13 shards (per layer) | ~33.8 s | ~8.9 s | - |
-| GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer) | **~47.8 s** | **~19.4 s** | - |
-| Gemma 3 270M | 270M / 270M | seq=16, 22 shards (per layer) | ~50.2 s | ~16.5 s | ~25.6 GB |
-| Gemma 3 270M | 270M / 270M | seq=512, 22 shards (per layer) | ~73.0 s | ~35.7 s | ~28.2 GB |
+| TimesFM 1.0 200M | 200M / 200M | seq=16, 108 ops/shard | ~14.9 s | ~2.9 s | ~17.3 GB |
+| GPT-2 124M | 124M / 124M | seq=16, 13 shards (per layer) | ~11.8 s | ~4.8 s | - |
+| GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer) | ~26.5 s | ~6.3 s | - |
+| Gemma 3 270M | 270M / 270M | seq=16, 22 shards (per layer) | ~16.8 s | ~4.7 s | ~37.1 GB |
+| Gemma 3 270M | 270M / 270M | seq=512, 22 shards (per layer) | ~40.5 s | ~11.1 s | ~35.4 GB |
 | DeepSeek-V2-Lite | 2.4B / 15.7B | seq=16, 21 shards (lazy-open MoE, mmap weights) | ~1662.3 s (~27.7 min) | ~271.3 s (~4.5 min) | ~124.9 GB |
 | DeepSeek-V2-Lite | 2.4B / 15.7B | seq=512, 28 shards (lazy-open MoE, mmap weights) | ~1547.3 s (~25.8 min) | ~1065.3 s (~17.8 min) | ~374.4 GB |
 | DeepSeek-V4.1-Flash | 8B/16B* / 552B | MoE + CSA2 + vision (planned) | - | - | - |

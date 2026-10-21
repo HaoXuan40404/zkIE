@@ -3,13 +3,10 @@
 //! prove/verify wall time + peak RSS.
 
 use std::fs;
-#[path = "../../benchmarks/vertical_weights_e2e.rs"]
-mod vertical_weights_e2e;
-
 use zkie_core::common::field::{Goldilocks, XorShift64};
 use zkie_core::common::fixed_point::{from_i32, to_i32, to_i64};
 use zkie_models_gemma3::{build_gemma3, H_PAD, VOCAB};
-use zkie_ops::compose::{prove_shard_dag, verify_shard_dag, Store};
+use zkie_ops::compose::{prove_shard_dag, verify_shard_dag_bytes, Store};
 
 fn load_i32(path: &str) -> Vec<Goldilocks> {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
@@ -48,32 +45,16 @@ fn main() {
     let mut best_time = f64::MAX;
     let mut best_pps = 0usize;
     let pps_values: Vec<usize> = vec![53usize];
-    let group_size = std::env::var("ZKIE_VERTICAL_GROUP_SIZE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(4usize);
-    let pow_bits = std::env::var("ZKIE_VERTICAL_POW_BITS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(17usize);
-    let t_commit = std::time::Instant::now();
-    let batches =
-        vertical_weights_e2e::commit_weight_batches(&store, &ops, group_size, pow_bits, "gemma3");
-    let commit_t = t_commit.elapsed();
     for &pps in &pps_values {
         let mut rng = XorShift64::new(0xBEEF);
         let t0 = std::time::Instant::now();
         let proof = prove_shard_dag(&mut store, &ops, pps);
-        let openings = vertical_weights_e2e::prove_weight_openings(&store, &batches, &proof);
         let prove_t = t0.elapsed();
         let t1 = std::time::Instant::now();
         assert!(
-            verify_shard_dag(&store.owned_slices(), &ops, pps, &proof),
+            verify_shard_dag_bytes(&bincode::serialize(&proof).unwrap(), &store.owned_slices(), &ops, pps),
             "sharded proof failed"
         );
-        assert!(vertical_weights_e2e::verify_weight_openings(
-            &batches, &openings
-        ));
         let verify_t = t1.elapsed();
 
         let lg = store.get(logits);
@@ -94,11 +75,9 @@ fn main() {
         }
         let total_t = (prove_t + verify_t).as_secs_f64();
         println!(
-            "pps={pps:5} shards={:3} commit={commit_t:?} prove={prove_t:?} verify={verify_t:?} total={total_t:.2}s argmax={matches}/{m} rss={}kB batches={} openings={}",
+            "pps={pps:5} shards={:3} prove={prove_t:?} verify={verify_t:?} total={total_t:.2}s argmax={matches}/{m} rss={}kB",
             proof.shards.len(),
-            peak_rss_kb(),
-            batches.len(),
-            openings.len()
+            peak_rss_kb()
         );
         if total_t < best_time {
             best_time = total_t;

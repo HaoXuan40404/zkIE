@@ -962,6 +962,7 @@ dependencies = [
 name = "zkie-models-gemma3"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "zkie-core",
  "zkie-engine",
  "zkie-ops",
@@ -981,6 +982,7 @@ dependencies = [
 name = "zkie-models-timesfm"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "zkie-core",
  "zkie-engine",
  "zkie-ops",
