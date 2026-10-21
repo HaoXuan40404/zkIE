@@ -42,6 +42,8 @@ pub struct RoPEProof {
     pub beta_f: Goldilocks,
     pub alpha_s: Goldilocks,
     pub beta_s: Goldilocks,
+    pub rem_f: Vec<Goldilocks>,
+    pub rem_s: Vec<Goldilocks>,
 }
 
 fn heads_of(x_len: usize, m: usize, d: usize) -> usize {
@@ -212,31 +214,13 @@ pub fn prove_rope(
         beta_f,
         alpha_s,
         beta_s,
+        rem_f,
+        rem_s,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn verify_rope(
-    proof: &RoPEProof,
-    x: &[Goldilocks],
-    cos: &[Goldilocks],
-    sin: &[Goldilocks],
-    out: &[Goldilocks],
-    m: usize,
-    d: usize,
-    shift: u32,
-) -> bool {
-    let heads = heads_of(x.len(), m, d);
-    let (_out, rem_f, rem_s) = rope_forward(x, cos, sin, m, d, shift);
-    let x_f = extract_first(x, m, d, heads);
-    let x_s = extract_second(x, m, d, heads);
-    let cos_b = broadcast_pair(cos, m, d, heads);
-    let sin_b = broadcast_pair(sin, m, d, heads);
-    let out_f = extract_first(out, m, d, heads);
-    let out_s = extract_second(out, m, d, heads);
-
-    let n = m * heads * (d / 2);
-    let ones = vec![Goldilocks::ONE; n];
+pub fn verify_rope(proof: &RoPEProof, shift: u32) -> bool {
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
     let two_shift = Goldilocks::from_u64(1u64 << shift);
     let half = Goldilocks::from_u64(1u64 << (shift - 1));
@@ -248,21 +232,12 @@ pub fn verify_rope(
         (neg, vec![5usize]),
         (half, vec![6usize]),
     ];
-    let first_fe = vec![
-        mle::eval(&x_f, &proof.r_first),
-        mle::eval(&cos_b, &proof.r_first),
-        mle::eval(&x_s, &proof.r_first),
-        mle::eval(&sin_b, &proof.r_first),
-        mle::eval(&out_f, &proof.r_first),
-        mle::eval(&rem_f, &proof.r_first),
-        mle::eval(&ones, &proof.r_first),
-    ];
     if !verify_virtual(
         &proof.first,
         &first_terms,
         Goldilocks::ZERO,
         &proof.r_first,
-        &first_fe,
+        &proof.first.final_evals,
     ) {
         return false;
     }
@@ -274,40 +249,32 @@ pub fn verify_rope(
         (neg, vec![5usize]),
         (half, vec![6usize]),
     ];
-    let second_fe = vec![
-        mle::eval(&x_s, &proof.r_second),
-        mle::eval(&cos_b, &proof.r_second),
-        mle::eval(&x_f, &proof.r_second),
-        mle::eval(&sin_b, &proof.r_second),
-        mle::eval(&out_s, &proof.r_second),
-        mle::eval(&rem_s, &proof.r_second),
-        mle::eval(&ones, &proof.r_second),
-    ];
     if !verify_virtual(
         &proof.second,
         &second_terms,
         Goldilocks::ZERO,
         &proof.r_second,
-        &second_fe,
+        &proof.second.final_evals,
     ) {
         return false;
     }
+
     let table: Vec<Goldilocks> = (0..(1usize << shift))
         .map(|j| Goldilocks::from_u64(j as u64))
         .collect();
-    let idx_f: Vec<u32> = rem_f.iter().map(|&v| to_i32(v) as u32).collect();
-    let idx_s: Vec<u32> = rem_s.iter().map(|&v| to_i32(v) as u32).collect();
+    let idx_f: Vec<u32> = proof.rem_f.iter().map(|&v| to_i32(v) as u32).collect();
+    let idx_s: Vec<u32> = proof.rem_s.iter().map(|&v| to_i32(v) as u32).collect();
     verify_lookup_fractional(
         &proof.frac_f,
         &idx_f,
-        &rem_f,
+        &proof.rem_f,
         &table,
         proof.alpha_f,
         proof.beta_f,
     ) && verify_lookup_fractional(
         &proof.frac_s,
         &idx_s,
-        &rem_s,
+        &proof.rem_s,
         &table,
         proof.alpha_s,
         proof.beta_s,

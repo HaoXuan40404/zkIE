@@ -1810,31 +1810,10 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 rsqrt_vals.push(p.rstd_vals.clone());
                 rsqrt_table_id = Some(*rsqrt_table);
             }
-            (
-                Op::RoPE {
-                    x,
-                    cos,
-                    sin,
-                    out,
-                    m,
-                    d,
-                    shift,
-                },
-                OpProof::RoPE(p),
-            ) => {
-                if !verify_rope(
-                    p,
-                    ws.get(*x),
-                    ws.get(*cos),
-                    ws.get(*sin),
-                    ws.get(*out),
-                    *m,
-                    *d,
-                    *shift,
-                ) {
+            (Op::RoPE { shift, .. }, OpProof::RoPE(p)) => {
+                if !verify_rope(p, *shift) {
                     return false;
                 }
-                claims.push((*out, p.r_out.clone(), mle::eval(ws.get(*out), &p.r_out)));
             }
             (
                 Op::TopKSelect {
