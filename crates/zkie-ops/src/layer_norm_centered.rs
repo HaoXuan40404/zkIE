@@ -373,15 +373,6 @@ mod tests {
             .map(|j| from_i64((j % 1000 + 1) as i64))
             .collect();
         let proof = prove_layer_norm_centered(&x, &w, &b, &rsqrt_table, m, d, d, &mut rng);
-        assert!(verify_layer_norm_centered(
-            &proof,
-            &x,
-            &w,
-            &b,
-            &rsqrt_table,
-            m,
-            d,
-            d
-        ));
+        assert!(verify_layer_norm_centered(&proof, &rsqrt_table, d));
     }
 }

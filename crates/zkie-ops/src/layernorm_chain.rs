@@ -148,14 +148,6 @@ mod tests {
             .collect();
         let rsqrt_table: Vec<Goldilocks> = (0..(1usize << 8)).map(|_| rng.field()).collect();
         let proof = prove_layernorm_chain(&x, &w, &b, &rsqrt_table, m, d, &mut rng);
-        assert!(verify_layernorm_chain(
-            &proof, rsqrt_table,
-            &x,
-            &w,
-            &b,
-            &rsqrt_table,
-            m,
-            d
-        ));
+        assert!(verify_layernorm_chain(&proof, &rsqrt_table));
     }
 }

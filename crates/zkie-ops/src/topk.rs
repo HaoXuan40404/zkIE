@@ -286,21 +286,13 @@ mod tests {
         let (m, n, k) = (4usize, 8usize, 3usize);
         let x: Vec<Goldilocks> = (0..m * n).map(|i| from_i64((i as i64 % 53) - 26)).collect();
         let (thr, sel, gate, d1, d2) = topk_forward(&x, m, n, k);
-        let proof = prove_topk(&x, &sel, &thr, &gate, &d1, &d2, m, n, k, &mut rng);
-        assert!(verify_topk(
-            &proof, &x, &sel, &thr, &gate, &d1, &d2, m, n, k
-        ));
-        // corrupt the gate -> must fail
-        let mut bad = gate.clone();
-        bad[0] = bad[0] + Goldilocks::ONE;
-        assert!(!verify_topk(
-            &proof, &x, &sel, &thr, &bad, &d1, &d2, m, n, k
-        ));
-        // corrupt d1 -> threshold relation must fail
-        let mut bad_d1 = d1.clone();
-        bad_d1[0] = bad_d1[0] + Goldilocks::ONE;
-        assert!(!verify_topk(
-            &proof, &x, &sel, &thr, &gate, &bad_d1, &d2, m, n, k
-        ));
+        let mut proof = prove_topk(&x, &sel, &thr, &gate, &d1, &d2, m, n, k, &mut rng);
+        assert!(verify_topk(&proof, k));
+        // corrupt sel -> range lookup must fail
+        proof.sel[0] = proof.sel[0] + Goldilocks::ONE;
+        assert!(!verify_topk(&proof, k));
+        // corrupt d1 -> range lookup must fail
+        proof.d1[0] = proof.d1[0] + Goldilocks::ONE;
+        assert!(!verify_topk(&proof, k));
     }
 }

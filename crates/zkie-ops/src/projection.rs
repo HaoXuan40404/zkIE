@@ -278,7 +278,7 @@ mod tests {
             b_ev
         );
         assert_eq!(b_ev, zkie_core::common::mle::eval(&w, &bp));
-        assert!(mm_verify(&mm, &ch, a_ev, b_ev));
+        assert!(mm_verify(&mm, &ch));
         let mut pt = v.clone();
         pt.extend_from_slice(&u);
         let eq = zkie_core::common::mle::eq_evals(&pt);

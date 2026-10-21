@@ -300,7 +300,7 @@ mod tests {
         let sin: Vec<Goldilocks> = (0..m * half).map(|_| from_i64(0)).collect();
         let (out, _rf, _rs) = rope_forward(&x, &cos, &sin, m, d, shift);
         let proof = prove_rope(&x, &cos, &sin, &out, m, d, shift, &mut rng);
-        assert!(verify_rope(&proof, &x, &cos, &sin, &out, m, d, shift));
+        assert!(verify_rope(&proof, shift));
         assert_eq!(out.len(), m * heads * d);
     }
 }

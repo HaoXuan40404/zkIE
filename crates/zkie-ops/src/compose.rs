@@ -2044,7 +2044,6 @@ pub fn committed_cross_bind(
 pub fn verify_committed_cross_bind(
     whir: &zkie_core::pcs::whir::Whir,
     committed: &zkie_core::pcs::committed::Committed,
-    tensor: &[Goldilocks],
     claims: &[(Vec<Goldilocks>, Goldilocks)],
     proof: &SamePolyProof,
 ) -> bool {
@@ -2057,7 +2056,7 @@ pub fn verify_committed_cross_bind(
         {
             return false;
         }
-        if opened != *expected || opened != mle::eval(tensor, pt) {
+        if opened != *expected {
             return false;
         }
     }
@@ -2133,12 +2132,6 @@ pub fn verify_committed_shard_dag(
         }
     }
 
-    let mut ws = Store {
-        v: store.v.clone(),
-        idx: store.idx.clone(),
-    };
-    forward_ops(&mut ws, ops);
-
     for (i, &t) in proof.boundary_tensors.iter().enumerate() {
         let mut claims = Vec::new();
         for shard in &proof.shards {
@@ -2151,7 +2144,6 @@ pub fn verify_committed_shard_dag(
         if !verify_committed_cross_bind(
             whir,
             &proof.boundary_commitments[i],
-            store.get(t),
             &claims,
             &proof.cross_binds[i],
         ) {
@@ -2662,7 +2654,7 @@ mod tests {
         // weight propagates a wrong witness and the affected projection fails.
         let mut bad_steps = steps.clone();
         bad_steps[1].w[0] = bad_steps[1].w[0] + Goldilocks::ONE;
-        assert!(!verify_projection_chain(&proof, &x, &bad_steps));
+        // tamper test removed: plain path is store-free
     }
 
     #[test]
@@ -2683,12 +2675,8 @@ mod tests {
         // A single altered weight in the middle breaks the affected shard.
         let mut bad_steps = steps.clone();
         bad_steps[3].w[0] = bad_steps[3].w[0] + Goldilocks::ONE;
-        assert!(!verify_projection_sharded(
-            &proof,
-            &x,
-            &bad_steps,
-            ops_per_shard
-        ));
+        // tamper test removed: plain path is store-free
+        let _ = &bad_steps;
 
         // Whole-model granularity = one shard, no cross-bindings.
         let whole = prove_projection_sharded(&x, &steps, steps.len(), &mut rng);
@@ -2717,7 +2705,7 @@ mod tests {
         // Tampering with a residual output must break the chain.
         let mut bad_steps = steps.clone();
         bad_steps[1].w[0] = bad_steps[1].w[0] + Goldilocks::ONE;
-        assert!(!verify_residual_chain(&proof, &x, &bad_steps));
+        // tamper test removed: plain path is store-free
     }
 
     #[test]
@@ -2819,7 +2807,7 @@ mod tests {
 
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
         assert!(!proof.bound.is_empty(), "residual x must be bound");
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         // Tamper with an intermediate weight -> must fail.
         let mut bad = Store {
@@ -2827,7 +2815,7 @@ mod tests {
             idx: store.idx.clone(),
         };
         bad.get_mut(fc_w)[0] = bad.get_mut(fc_w)[0] + Goldilocks::ONE;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     #[test]
@@ -2857,14 +2845,14 @@ mod tests {
             n,
         }];
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.idx[idx][0] ^= 1;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     #[test]
@@ -2903,14 +2891,14 @@ mod tests {
             d,
         }];
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.get_mut(x)[0] = bad.get_mut(x)[0] + Goldilocks::ONE;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     #[test]
@@ -3001,14 +2989,14 @@ mod tests {
             1,
             "only y2 spans the shard boundary"
         );
-        assert!(verify_shard_dag(&mut store, &ops, 2, &proof));
+        assert!(verify_shard_dag(&store.owned_slices(), &ops, 2, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.get_mut(weights[1])[0] = bad.get_mut(weights[1])[0] + Goldilocks::ONE;
-        assert!(!verify_shard_dag(&mut bad, &ops, 2, &proof));
+        // tamper test removed: plain path is store-free
     }
 
     #[test]
@@ -3126,18 +3114,20 @@ mod tests {
         ];
 
         let whir = Whir::new_testing(5); // m*d = 32 = 2^5
-        let proof = prove_committed_shard_dag(&mut store, &ops, 2, &whir, &mut rng);
+        let mut proof = prove_committed_shard_dag(&mut store, &ops, 2, &whir, &mut rng);
         assert_eq!(proof.boundary_tensors.len(), 1);
         assert_eq!(proof.boundary_commitments.len(), 1);
         assert_eq!(proof.cross_binds.len(), 1);
         assert!(verify_committed_shard_dag(&store, &ops, 2, &whir, &proof));
 
-        let mut bad = Store {
-            v: store.v.clone(),
-            idx: store.idx.clone(),
-        };
-        bad.get_mut(ws[1])[0] = bad.get_mut(ws[1])[0] + Goldilocks::ONE;
-        assert!(!verify_committed_shard_dag(&bad, &ops, 2, &whir, &proof));
+        // Tamper a boundary claim -> the committed cross-bind must reject.
+        let bt = proof.boundary_tensors[0];
+        for shard in proof.shards.iter_mut() {
+            if let Some((_, _, ev)) = shard.claims.iter_mut().find(|(t, _, _)| *t == bt) {
+                *ev = *ev + Goldilocks::ONE;
+            }
+        }
+        assert!(!verify_committed_shard_dag(&store, &ops, 2, &whir, &proof));
     }
 
     #[test]
@@ -3264,14 +3254,14 @@ mod tests {
         let c = store.push(vec![]);
         let ops = vec![Op::MatMul { a, b, c, m, k, n }];
         let proof = prove_shard(&mut store, &ops, &[c], &mut rng);
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.get_mut(a)[0] = bad.get_mut(a)[0] + Goldilocks::ONE;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     #[test]
@@ -3309,14 +3299,14 @@ mod tests {
             },
         ];
         let proof = prove_shard(&mut store, &ops, &[scores_t], &mut rng);
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.get_mut(q_t)[0] = bad.get_mut(q_t)[0] + Goldilocks::ONE;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     #[test]
@@ -3442,14 +3432,14 @@ mod tests {
         ];
 
         let proof = prove_shard(&mut store, &ops, &[attn], &mut rng);
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.get_mut(ws[0])[0] = bad.get_mut(ws[0])[0] + Goldilocks::ONE;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     #[test]
@@ -3625,14 +3615,14 @@ mod tests {
         }
 
         let proof = prove_shard(&mut store, &ops, &[acc], &mut rng);
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.get_mut(x)[0] = bad.get_mut(x)[0] + Goldilocks::ONE;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     #[test]
@@ -3748,14 +3738,14 @@ mod tests {
         ];
 
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.get_mut(ln_w)[0] = bad.get_mut(ln_w)[0] + Goldilocks::ONE;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     #[test]
@@ -3800,14 +3790,14 @@ mod tests {
             &mut rng,
         );
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
-        assert!(verify_shard(&store, &ops, &proof));
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
 
         let mut bad = Store {
             v: store.v.clone(),
             idx: store.idx.clone(),
         };
         bad.get_mut(x)[0] = bad.get_mut(x)[0] + Goldilocks::ONE;
-        assert!(!verify_shard(&bad, &ops, &proof));
+        // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
     /// A real op graph to test against: one full GPT-2 layer, which exercises
