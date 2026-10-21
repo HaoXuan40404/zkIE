@@ -4,11 +4,8 @@
 
 use std::fs;
 
-use sha2::Digest;
 use zkie_core::common::field::{Goldilocks, XorShift64};
 use zkie_core::common::fixed_point::{from_i32, to_i32, to_i64};
-#[path = "../../benchmarks/vertical_weights_e2e.rs"]
-mod vertical_weights_e2e;
 use zkie_ops::compose::{causal_mask, prove_shard_dag, verify_shard_dag, Op, Store};
 
 const D: usize = 1024;
@@ -377,32 +374,15 @@ fn main() {
 
     // WholeModel (~1 shard) and Layers(1) (176 ops/layer -> 13 shards).
     let shard_configs = vec![ops.len(), 176usize];
-    let group_size = std::env::var("ZKIE_VERTICAL_GROUP_SIZE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(4usize);
-    let pow_bits = std::env::var("ZKIE_VERTICAL_POW_BITS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(17usize);
-    let t_commit = std::time::Instant::now();
-    let batches =
-        vertical_weights_e2e::commit_weight_batches(&store, &ops, group_size, pow_bits, "gpt2");
-    let commit_t = t_commit.elapsed();
     for ops_per_shard in shard_configs {
         let mut rng = XorShift64::new(0xBEEF);
         let t0 = std::time::Instant::now();
         let proof = prove_shard_dag(&mut store, &ops, ops_per_shard);
-        let openings = vertical_weights_e2e::prove_weight_openings(&store, &batches, &proof);
         let prove_t = t0.elapsed();
         let t1 = std::time::Instant::now();
         assert!(
             verify_shard_dag(&store.owned_slices(), &ops, ops_per_shard, &proof),
             "sharded proof failed"
-        );
-        assert!(
-            vertical_weights_e2e::verify_weight_openings(&batches, &openings),
-            "vertical weight openings failed"
         );
         let verify_t = t1.elapsed();
 
@@ -424,12 +404,9 @@ fn main() {
         }
 
         println!(
-            "ops_per_shard={} ({} shards, {} batches, {} openings): commit {:?}, prove {:?}, verify {:?}, argmax {}/{}",
+            "ops_per_shard={} ({} shards): prove {:?}, verify {:?}, argmax {}/{}",
             ops_per_shard,
             proof.shards.len(),
-            batches.len(),
-            openings.len(),
-            commit_t,
             prove_t,
             verify_t,
             matches,
