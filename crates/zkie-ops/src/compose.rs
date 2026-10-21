@@ -2063,15 +2063,54 @@ pub fn verify_committed_cross_bind(
     verify_same_poly(proof, claims).is_some()
 }
 
+/// Collect the tensor ids of model weights: read but never written, and not a
+/// (weights = read-but-never-written w/b/bias tensors, excluding lookup/input)
+fn collect_weight_tensors(ops: &[Op]) -> Vec<T> {
+    let mut written = std::collections::BTreeSet::new();
+    for op in ops {
+        for t in op.writes() {
+            written.insert(t);
+        }
+    }
+    let mut weights = std::collections::BTreeSet::new();
+    for op in ops {
+        match op {
+            Op::MatMul { b, .. } => {
+                if !written.contains(b) {
+                    weights.insert(*b);
+                }
+            }
+            Op::Projection { w, bias, .. } => {
+                weights.insert(*w);
+                weights.insert(*bias);
+            }
+            Op::Layernorm { w, b, .. } => {
+                weights.insert(*w);
+                weights.insert(*b);
+            }
+            Op::LayerNormCentered { w, b, .. } => {
+                weights.insert(*w);
+                weights.insert(*b);
+            }
+            Op::RmsNorm { w, .. } => {
+                weights.insert(*w);
+            }
+            _ => {}
+        }
+    }
+    weights.into_iter().collect()
+}
+
 /// A committed shard-DAG proof: every shard proven as before (plain sumchecks,
-/// virtual intermediates), plus a WHIR commitment per cross-shard boundary tensor
-/// and a committed cross-shard binding. Only boundary tensors are committed; this
-/// is the "only shard boundaries + global weights commit" model.
+/// virtual intermediates), plus a WHIR commitment per cross-shard boundary tensor,
+/// per-size weight batches, and a committed cross-shard binding.
 pub struct CommittedShardDagProof {
     pub shards: Vec<OpShardProof>,
     pub boundary_tensors: Vec<T>,
     pub boundary_commitments: Vec<zkie_core::pcs::committed::Committed>,
     pub cross_binds: Vec<SamePolyProof>,
+    pub weight_batches: Vec<zkie_core::pcs::committed::BatchCtx>,
+    pub weight_locs: std::collections::BTreeMap<T, (usize, usize)>,
 }
 
 pub fn prove_committed_shard_dag(
@@ -2104,11 +2143,35 @@ pub fn prove_committed_shard_dag(
         cross_binds.push(sp);
     }
 
+    // Commit weights (grouped by size); opened lazily at their claim points.
+    let weight_tensors = collect_weight_tensors(ops);
+    let mut by_size: std::collections::BTreeMap<usize, Vec<(T, &[Goldilocks])>> =
+        std::collections::BTreeMap::new();
+    for &t in &weight_tensors {
+        let v = store.get(t);
+        by_size.entry(v.len()).or_default().push((t, v));
+    }
+    let mut weight_batches: Vec<zkie_core::pcs::committed::BatchCtx> = Vec::new();
+    let mut weight_locs: std::collections::BTreeMap<T, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for (len, group) in by_size {
+        let whir = zkie_core::pcs::whir::Whir::new_testing(len.trailing_zeros() as usize);
+        let refs: Vec<&[Goldilocks]> = group.iter().map(|(_, v)| *v).collect();
+        let batch = commit_weights_batch(&whir, &refs);
+        let bi = weight_batches.len();
+        for (i, (t, _)) in group.iter().enumerate() {
+            weight_locs.insert(*t, (bi, i));
+        }
+        weight_batches.push(batch);
+    }
+
     CommittedShardDagProof {
         shards: plain.shards,
         boundary_tensors,
         boundary_commitments,
         cross_binds,
+        weight_batches,
+        weight_locs,
     }
 }
 
@@ -2148,6 +2211,17 @@ pub fn verify_committed_shard_dag(
             &proof.cross_binds[i],
         ) {
             return false;
+        }
+    }
+
+    // Verify weight openings against the committed weight batches.
+    for shard in &proof.shards {
+        for (t, pt, ev) in &shard.claims {
+            if let Some(&(bi, ti)) = proof.weight_locs.get(t) {
+                if !verify_weight_batch(&proof.weight_batches[bi], ti, *ev, pt) {
+                    return false;
+                }
+            }
         }
     }
     true
