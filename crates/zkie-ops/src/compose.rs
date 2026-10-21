@@ -2175,7 +2175,7 @@ pub fn commit_weights_batch(
 pub fn verify_weight_batch(
     batch: &zkie_core::pcs::committed::BatchCtx,
     idx: usize,
-    tensor: &[Goldilocks],
+    expected: Goldilocks,
     point: &[Goldilocks],
 ) -> bool {
     let (open, ev) = batch.whir.open_batch(
@@ -2200,7 +2200,7 @@ pub fn verify_weight_batch(
     {
         return false;
     }
-    ev == mle::eval(tensor, point)
+    ev == expected
 }
 
 /// A projection block proven with committed weights: the matmul keeps the
@@ -2258,18 +2258,10 @@ pub fn prove_projection_committed(
 #[allow(clippy::too_many_arguments)]
 pub fn verify_projection_committed(
     proof: &CommittedProjectionProof,
-    x: &[Goldilocks],
     w_batch: &zkie_core::pcs::committed::BatchCtx,
     w_idx: usize,
     bias_batch: &zkie_core::pcs::committed::BatchCtx,
     bias_idx: usize,
-    w: &[Goldilocks],
-    bias: &[Goldilocks],
-    out: &[Goldilocks],
-    rem: &[Goldilocks],
-    m: usize,
-    k: usize,
-    n: usize,
     shift: u32,
 ) -> bool {
     if !verify_projection(&proof.plain, shift) {
@@ -2289,7 +2281,7 @@ pub fn verify_projection_committed(
         )
         .ok()
         != Some(proof.w_open.1)
-        || proof.w_open.1 != mle::eval(w, &w_pt)
+        || proof.w_open.1 != proof.plain.matmul.sumcheck.h_eval
     {
         return false;
     }
@@ -2305,7 +2297,7 @@ pub fn verify_projection_committed(
         )
         .ok()
         != Some(proof.bias_open.1)
-        || proof.bias_open.1 != mle::eval(bias, &proof.plain.pt)
+        || proof.bias_open.1 != proof.plain.affine.final_evals[4]
     {
         return false;
     }
@@ -3148,13 +3140,13 @@ mod tests {
 
         let point: Vec<Goldilocks> = (0..6).map(|_| rng.field()).collect();
         for (i, w) in weights.iter().enumerate() {
-            assert!(verify_weight_batch(&batch, i, w, &point));
+            assert!(verify_weight_batch(&batch, i, mle::eval(w, &point), &point));
         }
 
         // A wrong tensor at a table index must fail.
         let mut bad = weights[0].clone();
         bad[0] = bad[0] + Goldilocks::ONE;
-        assert!(!verify_weight_batch(&batch, 0, &bad, &point));
+        assert!(!verify_weight_batch(&batch, 0, mle::eval(&bad, &point), &point));
     }
 
     #[test]
@@ -3182,7 +3174,7 @@ mod tests {
         let whir_b = Whir::new_testing((m * d).trailing_zeros() as usize);
         let bias_batch = commit_weights_batch(&whir_b, &[&bias]);
 
-        let proof = prove_projection_committed(
+        let mut proof = prove_projection_committed(
             &x,
             &w_batch,
             0,
@@ -3200,38 +3192,21 @@ mod tests {
         );
         assert!(verify_projection_committed(
             &proof,
-            &x,
             &w_batch,
             0,
             &bias_batch,
             0,
-            &w,
-            &bias,
-            &out,
-            &rem,
-            m,
-            d,
-            d,
             shift,
         ));
 
-        // Wrong weight at the committed index must fail.
-        let mut bad_w = w.clone();
-        bad_w[0] = bad_w[0] + Goldilocks::ONE;
+        // Wrong opened weight value must fail.
+        proof.w_open.1 = proof.w_open.1 + Goldilocks::ONE;
         assert!(!verify_projection_committed(
             &proof,
-            &x,
             &w_batch,
             0,
             &bias_batch,
             0,
-            &bad_w,
-            &bias,
-            &out,
-            &rem,
-            m,
-            d,
-            d,
             shift,
         ));
     }
