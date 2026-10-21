@@ -1771,36 +1771,12 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 }
             }
             (
-                Op::LayerNormCentered {
-                    x,
-                    w,
-                    b,
-                    out,
-                    rsqrt_table,
-                    m,
-                    d,
-                    n_real,
-                },
+                Op::LayerNormCentered { rsqrt_table, n_real, .. },
                 OpProof::LayerNormCentered(lp),
             ) => {
-                if !verify_layer_norm_centered(
-                    lp,
-                    ws.get(*x),
-                    ws.get(*w),
-                    ws.get(*b),
-                    ws.get(*rsqrt_table),
-                    *m,
-                    *d,
-                    *n_real,
-                ) {
+                if !verify_layer_norm_centered(lp, ws.get(*rsqrt_table), *n_real) {
                     return false;
                 }
-                claims.push((
-                    *x,
-                    lp.centered_r.clone(),
-                    mle::eval(ws.get(*x), &lp.centered_r),
-                ));
-                claims.push((*out, lp.r_out.clone(), mle::eval(ws.get(*out), &lp.r_out)));
             }
             (Op::RmsNorm { rsqrt_table, n_real, .. }, OpProof::RmsNorm(p)) => {
                 if !verify_rms_norm(p, *n_real) {
