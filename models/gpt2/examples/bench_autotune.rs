@@ -382,7 +382,7 @@ fn main() {
         let ops_per_shard = g.ops_per_shard(ops.len(), LAYERS);
         let mut rng = XorShift64::new(0xBEEF);
         let t0 = std::time::Instant::now();
-        let proof = prove_shard_dag(&mut store, &ops, ops_per_shard, &mut rng);
+        let proof = prove_shard_dag(&mut store, &ops, ops_per_shard);
         let prove_s = t0.elapsed().as_secs_f64();
         let t1 = std::time::Instant::now();
         assert!(

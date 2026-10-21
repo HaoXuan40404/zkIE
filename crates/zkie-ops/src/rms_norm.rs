@@ -4,7 +4,7 @@
 //! actually-verified chain: ms truncation + rsqrt lookup + out affine.
 
 use crate::compose::{check_rsqrt_table, rsqrt_index};
-use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i32, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional_batch, verify_lookup_fractional_batch, FractionalProof,
@@ -101,7 +101,7 @@ pub fn prove_rms_norm(
     m: usize,
     d: usize,
     n_real: usize,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> RmsNormProof {
     let (ms, s_index, rstd, out, rem_out, rem_lo, rem_hi, sum_sq, rem_s) =
         rms_norm_forward(x, w, rsqrt_table, m, d, n_real);

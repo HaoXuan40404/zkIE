@@ -145,10 +145,9 @@ pub fn prove_model(
     ops: &[zkie_ops::compose::Op],
     granularity: Granularity,
     layers: usize,
-    rng: &mut zkie_core::common::field::XorShift64,
 ) -> zkie_ops::compose::ShardDagProof {
     let ops_per_shard = granularity.ops_per_shard(ops.len(), layers);
-    zkie_ops::compose::prove_shard_dag(store, ops, ops_per_shard, rng)
+    zkie_ops::compose::prove_shard_dag(store, ops, ops_per_shard)
 }
 
 /// Verify a whole-model proof produced by [`prove_model`].
@@ -510,7 +509,7 @@ mod tests {
             },
         ];
 
-        let p_op = prove_model(&mut store, &ops, Granularity::Ops(1), 1, &mut rng);
+        let p_op = prove_model(&mut store, &ops, Granularity::Ops(1), 1);
         assert_eq!(p_op.shards.len(), 4);
         assert!(verify_model(
             &mut store,
@@ -520,7 +519,7 @@ mod tests {
             &p_op
         ));
 
-        let p_whole = prove_model(&mut store, &ops, Granularity::WholeModel, 1, &mut rng);
+        let p_whole = prove_model(&mut store, &ops, Granularity::WholeModel, 1);
         assert_eq!(p_whole.shards.len(), 1);
         assert!(verify_model(
             &mut store,

@@ -23,7 +23,7 @@ use crate::rope::{prove_rope, rope_forward, verify_rope, RoPEProof};
 use crate::softmax_scaled::{prove_softmax_rounded, verify_softmax_rounded, SoftmaxRoundedProof};
 use crate::topk::{prove_topk, topk_forward, verify_topk, TopKSelectProof};
 use rayon::prelude::*;
-use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, prove_lookup_fractional_batch, verify_lookup_fractional,
@@ -33,6 +33,7 @@ use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, 
 use zkie_core::common::mle;
 use zkie_core::common::same_poly::{prove_same_poly, verify_same_poly, SamePolyProof};
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
+use zkie_core::common::transcript::Transcript;
 use zkie_core::common::weights_io::WeightMmap;
 
 fn transpose(a: &[Goldilocks], m: usize, k: usize) -> Vec<Goldilocks> {
@@ -136,7 +137,7 @@ fn forward(
 pub fn prove_projection_chain(
     x: &[Goldilocks],
     steps: &[ProjectionStep],
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> ProjectionChainProof {
     assert!(!steps.is_empty(), "chain needs at least one projection");
     let (ys, rems) = forward(x, steps);
@@ -232,7 +233,7 @@ pub fn prove_projection_sharded(
     x: &[Goldilocks],
     steps: &[ProjectionStep],
     ops_per_shard: usize,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> ProjectionShardedProof {
     assert!(!steps.is_empty(), "chain needs at least one projection");
     let ops_per_shard = ops_per_shard.max(1);
@@ -361,7 +362,7 @@ fn residual_forward(
 pub fn prove_residual_chain(
     x: &[Goldilocks],
     steps: &[ProjectionStep],
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> ResidualChainProof {
     assert!(!steps.is_empty(), "chain needs at least one block");
     let (xs, ps, rems) = residual_forward(x, steps);
@@ -1350,7 +1351,7 @@ pub fn prove_shard(
     store: &mut Store,
     ops: &[Op],
     boundary: &[T],
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> OpShardProof {
     forward_ops(store, ops);
     prove_shard_precomputed(store, ops, boundary, rng)
@@ -1363,7 +1364,7 @@ pub fn prove_shard_precomputed(
     store: &Store,
     ops: &[Op],
     boundary: &[T],
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> OpShardProof {
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
     let add_terms = vec![
@@ -2111,11 +2112,23 @@ pub fn shard_ranges(op_count: usize, ops_per_shard: usize) -> Vec<(usize, usize)
     out
 }
 
+fn absorb_statement(t: &mut Transcript, ops: &[Op], ops_per_shard: usize) {
+    t.absorb_u64(ops_per_shard as u64);
+    t.absorb_u64(ops.len() as u64);
+    for op in ops {
+        for id in op.reads() {
+            t.absorb_u64(id as u64);
+        }
+        for id in op.writes() {
+            t.absorb_u64(id as u64);
+        }
+    }
+}
+
 pub fn prove_shard_dag(
     store: &mut Store,
     ops: &[Op],
     ops_per_shard: usize,
-    rng: &mut XorShift64,
 ) -> ShardDagProof {
     let ranges = shard_ranges(ops.len(), ops_per_shard);
 
@@ -2124,13 +2137,17 @@ pub fn prove_shard_dag(
     // deterministically from the caller's RNG, so the proof stays reproducible.
     forward_ops(store, ops);
     let store_ref: &Store = store;
-    let seeds: Vec<u64> = (0..ranges.len()).map(|_| rng.next_u64()).collect();
+
+    let mut master = Transcript::new(b"zkie-shard-dag-v1");
+    absorb_statement(&mut master, ops, ops_per_shard);
+
     let shards: Vec<OpShardProof> = ranges
         .par_iter()
-        .zip(seeds.par_iter())
-        .map(|(&(s, e), &seed)| {
-            let mut srng = XorShift64::new(seed);
-            prove_shard_precomputed(store_ref, &ops[s..e], &[], &mut srng)
+        .enumerate()
+        .map(|(si, &(s, e))| {
+            let mut child = master.clone();
+            child.absorb_u64(si as u64);
+            prove_shard_precomputed(store_ref, &ops[s..e], &[], &mut child)
         })
         .collect();
 
@@ -2156,7 +2173,7 @@ pub fn prove_shard_dag(
     let mut cross_binds = Vec::new();
     for (t, claims) in by_tensor {
         if tensor_shards.get(&t).map(|s| s.len()).unwrap_or(0) > 1 {
-            let sp = prove_same_poly(store.get(t), &claims, rng);
+            let sp = prove_same_poly(store.get(t), &claims, &mut master);
             cross_tensors.push(t);
             cross_binds.push(sp);
         }
@@ -2237,7 +2254,7 @@ pub fn committed_cross_bind(
     committed: &zkie_core::pcs::committed::Committed,
     tensor: &[Goldilocks],
     claims: &[(Vec<Goldilocks>, Goldilocks)],
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> Option<SamePolyProof> {
     for (pt, expected) in claims {
         let (open, opened) = whir.open(committed.prover_data.clone(), &committed.protocol, pt);
@@ -2296,9 +2313,9 @@ pub fn prove_committed_shard_dag(
     ops: &[Op],
     ops_per_shard: usize,
     whir: &zkie_core::pcs::whir::Whir,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> CommittedShardDagProof {
-    let plain = prove_shard_dag(store, ops, ops_per_shard, rng);
+    let plain = prove_shard_dag(store, ops, ops_per_shard);
     let boundary_tensors = plain.cross_tensors.clone();
 
     let mut boundary_commitments = Vec::with_capacity(boundary_tensors.len());
@@ -2451,7 +2468,7 @@ pub fn prove_projection_committed(
     k: usize,
     n: usize,
     shift: u32,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> CommittedProjectionProof {
     let plain = prove_projection(x, w, bias, out, rem, m, k, n, shift, rng);
     // The matmul opens the weight `w` (k x n) at `v ++ ch`.
@@ -2553,7 +2570,7 @@ pub fn build_gpt2_layer(
     exp_table: T,
     gelu_table: T,
     rsqrt_table: T,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> (Vec<Op>, T) {
     let dh = d / heads;
     let mut ops = Vec::new();
@@ -2833,7 +2850,7 @@ mod tests {
     use super::*;
     use zkie_core::common::field::PrimeCharacteristicRing;
 
-    fn step(m: usize, k: usize, n: usize, shift: u32, rng: &mut XorShift64) -> ProjectionStep {
+    fn step(m: usize, k: usize, n: usize, shift: u32, rng: &mut impl ChallengeSource) -> ProjectionStep {
         let w: Vec<Goldilocks> = (0..k * n)
             .map(|_| from_i64((rng.next_u64() % 50) as i64))
             .collect();
@@ -3210,7 +3227,7 @@ mod tests {
             },
         ];
 
-        let proof = prove_shard_dag(&mut store, &ops, 2, &mut rng);
+        let proof = prove_shard_dag(&mut store, &ops, 2);
         assert_eq!(proof.shards.len(), 2);
         assert_eq!(
             proof.cross_tensors.len(),

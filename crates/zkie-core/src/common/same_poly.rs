@@ -1,7 +1,7 @@
 //! same_poly: prove a set of claims (r_i, y_i) are all evaluations of the SAME
 //! MLE f (f(r_i)=y_i), and merge them into one claim at a fresh point. This is
 //! the claim-merging primitive for reduction chaining (DeepProve iop/same_poly).
-use crate::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use crate::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use crate::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 pub struct SamePolyProof {
     pub coeffs: Vec<Goldilocks>,
@@ -12,7 +12,7 @@ pub struct SamePolyProof {
 pub fn prove_same_poly(
     f: &[Goldilocks],
     claims: &[(Vec<Goldilocks>, Goldilocks)],
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> SamePolyProof {
     let t = f.len().trailing_zeros() as usize;
     for (r_i, _) in claims {

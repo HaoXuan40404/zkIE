@@ -1,6 +1,6 @@
 //! logUp GKR: prove sum_i num[i]/den[i] == C via the fraction-addition tree
 //! with eq-weighted virtual sumchecks (DeepProve "fractional sumcheck").
-use crate::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use crate::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use crate::common::fixed_point::from_i64;
 use crate::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 pub struct FractionalLayer {
@@ -26,7 +26,7 @@ fn build_terms(c: Goldilocks) -> Vec<(Goldilocks, Vec<usize>)> {
 pub fn prove_fractional(
     mut num: Vec<Goldilocks>,
     mut den: Vec<Goldilocks>,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> FractionalProof {
     assert_eq!(num.len(), den.len());
     assert!(num.len().is_power_of_two());
@@ -113,7 +113,7 @@ pub fn prove_lookup_fractional(
     table: &[Goldilocks],
     alpha: Goldilocks,
     beta: Goldilocks,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> FractionalProof {
     assert_eq!(x.len(), y.len());
     let n = x.len();
@@ -174,7 +174,7 @@ pub fn prove_lookup_fractional_batch(
     table: &[Goldilocks],
     alpha: Goldilocks,
     beta: Goldilocks,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> FractionalProof {
     assert_eq!(xs.len(), ys.len());
     let n: usize = xs.iter().map(|x| x.len()).sum();

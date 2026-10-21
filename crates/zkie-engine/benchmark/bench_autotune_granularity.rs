@@ -66,7 +66,7 @@ fn main() {
     let mut best = (usize::MAX, std::time::Duration::MAX);
     for &g in &granularities {
         let t0 = Instant::now();
-        let proof = prove_model(&mut store, &ops, Granularity::Ops(g), 1, &mut rng);
+        let proof = prove_model(&mut store, &ops, Granularity::Ops(g), 1);
         let dt = t0.elapsed();
         assert!(
             verify_model(&mut store, &ops, Granularity::Ops(g), 1, &proof),

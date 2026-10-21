@@ -3,7 +3,7 @@
 //! (affine). This is the last op type: a reduction + a lookup + an affine, the
 //! same shape as softmax, wired as one chain with virtual intermediates.
 
-use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
@@ -30,7 +30,7 @@ pub fn prove_layernorm_chain(
     rsqrt_table: &[Goldilocks],
     m: usize,
     d: usize,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> LayernormChainProof {
     // forward
     let mean_sq: Vec<Goldilocks> = (0..m)

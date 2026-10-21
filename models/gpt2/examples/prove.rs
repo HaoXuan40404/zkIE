@@ -17,7 +17,7 @@ fn main() {
     let ops_per_shard = 176; // 13 shards (one transformer layer each)
     let mut rng = XorShift64::new(0xBEEF);
     let t0 = std::time::Instant::now();
-    let proof = prove_shard_dag(&mut store, &ops, ops_per_shard, &mut rng);
+    let proof = prove_shard_dag(&mut store, &ops, ops_per_shard);
     let prove_t = t0.elapsed();
     let t1 = std::time::Instant::now();
     assert!(verify_shard_dag(&mut store, &ops, ops_per_shard, &proof));

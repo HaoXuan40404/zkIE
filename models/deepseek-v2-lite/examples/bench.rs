@@ -48,7 +48,7 @@ fn main() {
     let commit_t = t_commit.elapsed();
     let mut rng = XorShift64::new(0xD5EED);
     let t0 = std::time::Instant::now();
-    let proof = prove_shard_dag(&mut store, &ops, 718, &mut rng);
+    let proof = prove_shard_dag(&mut store, &ops, 718);
     let openings = vertical_weights_e2e::prove_weight_openings(&store, &batches, &proof);
     let prove_t = t0.elapsed();
     println!(

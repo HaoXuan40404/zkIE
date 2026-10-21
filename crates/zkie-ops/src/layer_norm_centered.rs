@@ -4,7 +4,7 @@
 //! remainders are witness values (not yet range-checked — soundness TODO).
 
 use crate::compose::{check_rsqrt_table, rsqrt_index};
-use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
@@ -129,7 +129,7 @@ pub fn prove_layer_norm_centered(
     m: usize,
     d: usize,
     n_real: usize,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> LayerNormCenteredProof {
     let (mean, centered, var, s_index, rstd, out, rem_out, sum_mean, rem_mean, sum_var, rem_var) =
         layer_norm_forward(x, w, b, rsqrt_table, m, d, n_real);

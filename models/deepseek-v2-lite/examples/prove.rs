@@ -44,7 +44,7 @@ fn main() {
     let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
     let mut rng = XorShift64::new(0xD5EED);
     let t0 = std::time::Instant::now();
-    let proof = prove_shard_dag(&mut store, &ops, shard, &mut rng);
+    let proof = prove_shard_dag(&mut store, &ops, shard);
     let prove_t = t0.elapsed();
 
     let lg = store.get(logits);

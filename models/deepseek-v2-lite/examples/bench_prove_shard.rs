@@ -77,7 +77,7 @@ fn main() {
     //    value crosses a node boundary, so there is nothing to take on trust.
     let mut rng = XorShift64::new(0xD5EED ^ (idx as u64));
     let t1 = std::time::Instant::now();
-    let proof = prove_shard_precomputed(&store, &ops[s..e], &[], &mut rng);
+    let proof = prove_shard_precomputed(&store, &ops[s..e], &[]);
     let prove = t1.elapsed();
     let after_prove = peak_rss_kb();
 

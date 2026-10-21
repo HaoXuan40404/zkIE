@@ -9,7 +9,7 @@
 //!   d1 = sel*(x - thr) and d2 = (1-sel)*(thr - x), both in [0, 2^16)
 //!   sum_e sel[t,e] = k for every row  (exactly k selected)
 
-use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing, XorShift64};
+use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i32, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
@@ -87,7 +87,7 @@ pub fn prove_topk(
     m: usize,
     n: usize,
     k: usize,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> TopKSelectProof {
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
     let r: Vec<Goldilocks> = (0..(m * n).trailing_zeros() as usize)

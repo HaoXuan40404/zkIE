@@ -373,7 +373,7 @@ fn main() {
     });
 
     let t0 = std::time::Instant::now();
-    let proof = prove_shard(&mut store, &ops, &[logits], &mut rng);
+    let proof = prove_shard(&mut store, &ops, &[logits]);
     let prove_t = t0.elapsed();
     let t1 = std::time::Instant::now();
     assert!(

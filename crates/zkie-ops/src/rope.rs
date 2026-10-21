@@ -12,7 +12,7 @@
 //! `cos`/`sin` are `[m, d/2]` fixed-point tables shared across heads. The
 //! output keeps the natural layout, so it can feed the attention matmul.
 
-use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing, XorShift64};
+use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i32, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
@@ -139,7 +139,7 @@ pub fn prove_rope(
     m: usize,
     d: usize,
     shift: u32,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> RoPEProof {
     let heads = heads_of(x.len(), m, d);
     let (_out, rem_f, rem_s) = rope_forward(x, cos, sin, m, d, shift);

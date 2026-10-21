@@ -3,7 +3,7 @@
 //! affine rounding as an arithmetic constraint, and the range check as a logUp
 //! lookup. This is the first reusable integration building block for the full
 //! GPT-2 layer circuit.
-use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i32};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
@@ -49,7 +49,7 @@ pub fn prove_projection(
     k: usize,
     n: usize,
     shift: u32,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> ProjectionProof {
     let half = Goldilocks::from_u64(1u64 << (shift - 1));
     let two_shift = Goldilocks::from_u64(1u64 << shift);

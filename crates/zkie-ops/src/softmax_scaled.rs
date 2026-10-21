@@ -7,7 +7,7 @@
 //! `sum_j e_ij = sum_i`, rescale gives `sum_j out_ij * sum_i = sum_j e_ij`,
 //! so `sum_j out_ij = 1` (sum != 0).
 
-use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::from_i64;
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
@@ -43,7 +43,7 @@ pub fn prove_softmax_rounded(
     table: &[Goldilocks],
     m: usize,
     n: usize,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> SoftmaxRoundedProof {
     assert_eq!(indices.len(), m * n);
     assert_eq!(e.len(), m * n);
@@ -166,7 +166,7 @@ pub fn prove_softmax_scaled(
     table: &[Goldilocks],
     m: usize,
     n: usize,
-    rng: &mut XorShift64,
+    rng: &mut impl ChallengeSource,
 ) -> SoftmaxScaledProof {
     assert_eq!(indices.len(), m * n);
     assert_eq!(e.len(), m * n);

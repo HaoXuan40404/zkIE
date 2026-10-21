@@ -281,7 +281,7 @@ fn main() {
         c: out,
     });
 
-    let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
+    let proof = prove_shard(&mut store, &ops, &[out]);
     assert!(
         verify_shard(&store, &ops, &proof),
         "real-weight GPT-2 layer proof failed"
