@@ -33,6 +33,9 @@ pub struct TopKSelectProof {
     pub b_d1: Goldilocks,
     pub a_d2: Goldilocks,
     pub b_d2: Goldilocks,
+    pub sel: Vec<Goldilocks>,
+    pub d1: Vec<Goldilocks>,
+    pub d2: Vec<Goldilocks>,
 }
 
 /// `(thr, sel, gate, d1, d2)`.
@@ -171,100 +174,72 @@ pub fn prove_topk(
         b_d1,
         a_d2,
         b_d2,
-    }
+            sel: sel.to_vec(),
+        d1: d1.to_vec(),
+        d2: d2.to_vec(),
+}
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn verify_topk(
-    proof: &TopKSelectProof,
-    x: &[Goldilocks],
-    sel: &[Goldilocks],
-    thr: &[Goldilocks],
-    gate: &[Goldilocks],
-    d1: &[Goldilocks],
-    d2: &[Goldilocks],
-    m: usize,
-    n: usize,
-    k: usize,
-) -> bool {
+pub fn verify_topk(proof: &TopKSelectProof, k: usize) -> bool {
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
 
-    let gate_terms = vec![(Goldilocks::ONE, vec![0usize, 1usize]), (neg, vec![2usize])];
-    let gate_fe = vec![
-        mle::eval(x, &proof.r),
-        mle::eval(sel, &proof.r),
-        mle::eval(gate, &proof.r),
-    ];
     if !verify_virtual(
         &proof.gate_rel,
-        &gate_terms,
+        &[(Goldilocks::ONE, vec![0usize, 1usize]), (neg, vec![2usize])],
         Goldilocks::ZERO,
         &proof.r,
-        &gate_fe,
+        &proof.gate_rel.final_evals,
     ) {
         return false;
     }
 
-    let thr_b: Vec<Goldilocks> = thr
-        .iter()
-        .flat_map(|&v| std::iter::repeat(v).take(n))
-        .collect();
-
-    let d1_terms = vec![
-        (Goldilocks::ONE, vec![0usize, 1usize]),
-        (neg, vec![0usize, 2usize]),
-        (neg, vec![3usize]),
-    ];
-    let d1_fe = vec![
-        mle::eval(sel, &proof.r),
-        mle::eval(x, &proof.r),
-        mle::eval(&thr_b, &proof.r),
-        mle::eval(d1, &proof.r),
-    ];
-    if !verify_virtual(&proof.d1_rel, &d1_terms, Goldilocks::ZERO, &proof.r, &d1_fe) {
+    if !verify_virtual(
+        &proof.d1_rel,
+        &[
+            (Goldilocks::ONE, vec![0usize, 1usize]),
+            (neg, vec![0usize, 2usize]),
+            (neg, vec![3usize]),
+        ],
+        Goldilocks::ZERO,
+        &proof.r,
+        &proof.d1_rel.final_evals,
+    ) {
         return false;
     }
 
-    let d2_terms = vec![
-        (Goldilocks::ONE, vec![2usize]),
-        (neg, vec![1usize]),
-        (neg, vec![0usize, 2usize]),
-        (Goldilocks::ONE, vec![0usize, 1usize]),
-        (neg, vec![3usize]),
-    ];
-    let d2_fe = vec![
-        mle::eval(sel, &proof.r),
-        mle::eval(x, &proof.r),
-        mle::eval(&thr_b, &proof.r),
-        mle::eval(d2, &proof.r),
-    ];
-    if !verify_virtual(&proof.d2_rel, &d2_terms, Goldilocks::ZERO, &proof.r, &d2_fe) {
+    if !verify_virtual(
+        &proof.d2_rel,
+        &[
+            (Goldilocks::ONE, vec![2usize]),
+            (neg, vec![1usize]),
+            (neg, vec![0usize, 2usize]),
+            (Goldilocks::ONE, vec![0usize, 1usize]),
+            (neg, vec![3usize]),
+        ],
+        Goldilocks::ZERO,
+        &proof.r,
+        &proof.d2_rel.final_evals,
+    ) {
         return false;
     }
 
-    let eq_row = mle::eq_evals(&proof.r_row);
-    let eq_b: Vec<Goldilocks> = eq_row
-        .iter()
-        .flat_map(|&v| std::iter::repeat(v).take(n))
-        .collect();
-    let row_terms = vec![(Goldilocks::ONE, vec![0usize, 1usize])];
-    let row_fe = vec![mle::eval(sel, &proof.r), mle::eval(&eq_b, &proof.r)];
     if !verify_virtual(
         &proof.row_sum,
-        &row_terms,
+        &[(Goldilocks::ONE, vec![0usize, 1usize])],
         from_i64(k as i64),
         &proof.r,
-        &row_fe,
+        &proof.row_sum.final_evals,
     ) {
         return false;
     }
 
-    let sel_idx: Vec<u32> = sel.iter().map(|&s| to_i32(s) as u32).collect();
+    let sel_idx: Vec<u32> = proof.sel.iter().map(|&s| to_i32(s) as u32).collect();
     let bin_table = vec![Goldilocks::ZERO, Goldilocks::ONE];
     if !verify_lookup_fractional(
         &proof.sel_range,
         &sel_idx,
-        sel,
+        &proof.sel,
         &bin_table,
         proof.a_sel,
         proof.b_sel,
@@ -272,26 +247,30 @@ pub fn verify_topk(
         return false;
     }
 
-    let d1_idx: Vec<u32> = d1.iter().map(|&v| to_i32(v) as u32).collect();
+    let d1_idx: Vec<u32> = proof.d1.iter().map(|&v| to_i32(v) as u32).collect();
     let d1_table: Vec<Goldilocks> = (0..(1usize << 16))
         .map(|j| Goldilocks::from_u64(j as u64))
         .collect();
     if !verify_lookup_fractional(
         &proof.d1_range,
         &d1_idx,
-        d1,
+        &proof.d1,
         &d1_table,
         proof.a_d1,
         proof.b_d1,
     ) {
         return false;
     }
-    let d2_idx: Vec<u32> = d2.iter().map(|&v| to_i32(v) as u32).collect();
+
+    let d2_idx: Vec<u32> = proof.d2.iter().map(|&v| to_i32(v) as u32).collect();
+    let d2_table: Vec<Goldilocks> = (0..(1usize << 16))
+        .map(|j| Goldilocks::from_u64(j as u64))
+        .collect();
     verify_lookup_fractional(
         &proof.d2_range,
         &d2_idx,
-        d2,
-        &d1_table,
+        &proof.d2,
+        &d2_table,
         proof.a_d2,
         proof.b_d2,
     )

@@ -1791,37 +1791,10 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                     return false;
                 }
             }
-            (
-                Op::TopKSelect {
-                    x,
-                    sel,
-                    thr,
-                    gate,
-                    d1,
-                    d2,
-                    m,
-                    n,
-                    k,
-                },
-                OpProof::TopKSelect(p),
-            ) => {
-                if !verify_topk(
-                    p,
-                    ws.get(*x),
-                    ws.get(*sel),
-                    ws.get(*thr),
-                    ws.get(*gate),
-                    ws.get(*d1),
-                    ws.get(*d2),
-                    *m,
-                    *n,
-                    *k,
-                ) {
+            (Op::TopKSelect { k, .. }, OpProof::TopKSelect(p)) => {
+                if !verify_topk(p, *k) {
                     return false;
                 }
-                claims.push((*x, p.r.clone(), mle::eval(ws.get(*x), &p.r)));
-                claims.push((*sel, p.r.clone(), mle::eval(ws.get(*sel), &p.r)));
-                claims.push((*gate, p.r.clone(), mle::eval(ws.get(*gate), &p.r)));
             }
             _ => return false,
         }
