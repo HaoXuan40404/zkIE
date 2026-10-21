@@ -23,20 +23,29 @@ codeword within the PoW budget).
 
 | Model | Config | Commit | Prove | Verify | Argmax | Peak RSS |
 | --- | --- | --- | --- | --- | --- | --- |
-| GPT-2 | seq=16, 13 shards | 10.22s (cached) | 33.80s | 9.30s | 16/16 | - |
-| GPT-2 | seq=512, 13 shards | 10.21s (cached) | 47.38s | 20.15s | 511/512 | - |
-| TimesFM 200M | seq=16, pps=108 | 94.66s (first) | 72.59s | 11.81s | - | 48.4GB |
-| Gemma 3 | seq=16, pps=53 | 28.95s (first) | 46.58s | 17.02s | 16/16 | 30.2GB |
+| GPT-2 | seq=16, 13 shards | 7.41s (first) | 34.59s | 9.46s | 16/16 | - |
+| GPT-2 | seq=512, 13 shards | 2.05s (cached) | 47.75s | 20.01s | 511/512 | - |
+| TimesFM 200M | seq=16, pps=108 | 26.01s (first) | 77.03s | 11.66s | - | 27.7GB |
+| Gemma 3 | seq=16, pps=53 | 9.22s (first) | 48.91s | 16.76s | 16/16 | 25.6GB |
+| Gemma 3 | seq=512, pps=53 | 2.56s (cached) | 72.21s | 34.92s | 505/512 | 28.2GB |
 | DeepSeek-V2-Lite | seq=16 | 224.05s (cached) | 2411.20s | 271.06s | ok | 124.96GB |
 
 `Commit` is the model-commitment phase: pack + WHIR commit + cache write on the
-first run, or cache load on later runs. GPT-2's 10.2s is a cached run;
-TimesFM/Gemma 3 numbers are first runs that write the cache.
+first run, or cache load on later runs. GPT-2/Gemma 3 seq=512 are cached runs;
+the others are first runs that write the cache.
 
 Correctness holds: GPT-2 seq=512 argmax 511/512 (one near-tie fixed-point),
-Gemma 3 16/16, DeepSeek verify `ok=true open_ok=true`. The batch-opening proofs
-are part of the prove/verify path (`verify_weight_openings` is asserted), not a
-sidecar.
+Gemma 3 16/16 (seq=512 505/512, fixed-point drift at longer sequences),
+DeepSeek verify `ok=true open_ok=true`. The batch-opening proofs are part of the
+prove/verify path (`verify_weight_openings` is asserted), not a sidecar.
+
+## Bulk serialization
+
+The Merkle prover data (leaves + digest layers) is now written as flat POD byte
+streams instead of bincode, so restore is a single `read_exact`/`read_to_end`
+plus a contiguous copy rather than a per-element decode. Opening restore dropped
+~87%: TimesFM 28.3s -> 3.5s, GPT-2 -> ~1s. First-run commit time also dropped
+(TimesFM 94.7s -> 26.0s, Gemma 3 28.9s -> 9.2s) because serialization is faster.
 
 ## Key finding: lazy opening is required for large MoE
 
