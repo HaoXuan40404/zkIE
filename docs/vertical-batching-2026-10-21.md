@@ -28,7 +28,7 @@ codeword within the PoW budget).
 | TimesFM 200M | seq=16, pps=108 | 26.01s (first) | 77.03s | 11.66s | - | 27.7GB |
 | Gemma 3 | seq=16, pps=53 | 9.22s (first) | 48.91s | 16.76s | 16/16 | 25.6GB |
 | Gemma 3 | seq=512, pps=53 | 2.56s (cached) | 72.21s | 34.92s | 505/512 | 28.2GB |
-| DeepSeek-V2-Lite | seq=16 | 682.10s (first) | 1677.71s | 269.37s | ok | 125.06GB |
+| DeepSeek-V2-Lite | seq=16 | 677.44s (first) | 1662.34s | 271.30s | ok | 124.95GB |
 
 `Commit` is the model-commitment phase: pack + WHIR commit + cache write on the
 first run, or cache load on later runs. GPT-2/Gemma 3 seq=512 are cached runs;
@@ -54,11 +54,13 @@ allows into a single `BatchCtx` (num_vars = arity + log2(group_size), capped at
 | TimesFM 200M | seq=16 | 332 -> 9 | 77.03s -> 77.53s | 11.66s -> 10.66s (27.7 -> 24.1GB) |
 | Gemma 3 | seq=16 | 59 -> 3 | 48.91s -> 50.24s | 16.76s -> 16.46s |
 | Gemma 3 | seq=512 | 59 -> 3 | 72.21s -> 73.04s | 34.92s -> 35.74s |
+| DeepSeek-V2-Lite | seq=16 | 1254 -> 189 | 1677.71s -> 1662.34s | 269.37s -> 271.30s (125.06 -> 124.95GB) |
 
-Argmax is unchanged everywhere (GPT-2 16/16 and 511/512; Gemma 3 16/16 and
-505/512).
+Correctness is unchanged everywhere (GPT-2 16/16 and 511/512; Gemma 3 16/16
+and 505/512; DeepSeek verify ok=true open_ok=true).
 
-Effect: independent FRI proofs drop from hundreds to single digits, which is a
+Effect: independent FRI proofs drop sharply (GPT-2 150->3, DeepSeek
+1254->189), which is a
 real soundness win (error no longer accumulates across hundreds of openings).
 Prove time is essentially flat (within ~2%) because the Merkle/Poseidon work
 saved by fewer openings is offset by the larger DFT of the now-packed codewords;
