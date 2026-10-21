@@ -266,6 +266,7 @@ pub struct Whir {
     folding_factor: FoldingFactor,
     security_level: usize,
     pow_bits: usize,
+    num_variables: usize,
     /// (commits, total seconds) spent inside `commit`, for performance telemetry.
     commit_stats: std::cell::Cell<(u64, f64)>,
     open_stats: std::cell::Cell<(u64, f64)>,
@@ -350,6 +351,7 @@ impl Whir {
             folding_factor,
             security_level,
             pow_bits,
+            num_variables,
             commit_stats: std::cell::Cell::new((0, 0.0)),
             open_stats: std::cell::Cell::new((0, 0.0)),
             verify_stats: std::cell::Cell::new((0, 0.0)),
@@ -383,6 +385,23 @@ impl Whir {
 
     pub fn pow_bits(&self) -> usize {
         self.pow_bits
+    }
+
+    pub fn num_variables(&self) -> usize {
+        self.num_variables
+    }
+
+    /// Reconstruct the public opening protocol for `num_tables` tables of arity
+    /// `arity`, each opened at column 0 with a caller-supplied point. This is the
+    /// exact protocol built by `commit` (num_tables == 1) and `commit_batch`.
+    pub fn opening_protocol(&self, arity: usize, num_tables: usize) -> OpeningProtocol {
+        let folding = self.folding_factor.at_round(0);
+        let point_schedule: PointSchedule =
+            std::iter::once(OpeningBatch::new(vec![0], Vec::new())).collect();
+        let specs: Vec<TableSpec> = (0..num_tables)
+            .map(|_| TableSpec::new(TableShape::new(arity, 1), point_schedule.clone()))
+            .collect();
+        OpeningProtocol::new(specs).pad_to_min_num_variables(folding)
     }
 
     pub fn commit(&self, evals: &[Goldilocks]) -> (Commitment, ProverData, OpeningProtocol) {
@@ -854,3 +873,24 @@ mod tests {
         assert_eq!(verified.len(), num_tables);
     }
 }
+
+
+impl serde::Serialize for Whir {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        let mut t = serializer.serialize_tuple(3)?;
+        t.serialize_element(&self.num_variables)?;
+        t.serialize_element(&self.security_level)?;
+        t.serialize_element(&self.pow_bits)?;
+        t.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Whir {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (num_variables, security_level, pow_bits) =
+            <(usize, usize, usize)>::deserialize(deserializer)?;
+        Ok(Whir::with_params(num_variables, security_level, pow_bits))
+    }
+}
+

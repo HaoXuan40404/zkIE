@@ -2037,25 +2037,30 @@ pub fn verify_shard_dag(
 /// the plain `prove_shard_dag` defers. The opening proofs are produced here (on
 /// the prover side) and carried in the proof, so the verifier never touches the
 /// committed tensor data.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct CommittedCrossBindProof {
     pub same_poly: SamePolyProof,
     pub openings: Vec<(zkie_core::pcs::whir::Proof, Goldilocks)>,
 }
 
-/// Verifier-side boundary commitment: the commitment root plus its opening
-/// protocol, WITHOUT the prover's Merkle data.
+/// Verifier-side boundary commitment: the commitment root plus the tensor arity
+/// (log2 length). The opening protocol is reconstructed by the verifier from the
+/// arity, so no prover's Merkle data or protocol object is shipped.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct BoundaryCommit {
     pub commitment: zkie_core::pcs::whir::Commitment,
-    pub protocol: zkie_core::pcs::whir::OpeningProtocol,
+    pub arity: usize,
 }
 
-/// Verifier-side weight batch commitment: root + protocol + the batch Whir +
-/// table count, WITHOUT the prover's Merkle data.
+/// Verifier-side weight batch commitment: root + arity + table count + the batch
+/// Whir (public parameters). The opening protocol is reconstructed from the
+/// arity, so no protocol object or prover's Merkle data is shipped.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct WeightBatchCommit {
     pub commitment: zkie_core::pcs::whir::Commitment,
-    pub protocol: zkie_core::pcs::whir::OpeningProtocol,
-    pub whir: zkie_core::pcs::whir::Whir,
+    pub arity: usize,
     pub num_tables: usize,
+    pub whir: zkie_core::pcs::whir::Whir,
 }
 
 pub fn committed_cross_bind(
@@ -2097,9 +2102,10 @@ pub fn verify_committed_cross_bind(
     if proof.openings.len() != claims.len() {
         return false;
     }
+    let protocol = whir.opening_protocol(committed.arity, 1);
     for ((pt, expected), (open, opened)) in claims.iter().zip(proof.openings.iter()) {
         if whir
-            .verify(&committed.commitment, open, &committed.protocol, pt)
+            .verify(&committed.commitment, open, &protocol, pt)
             .ok()
             != Some(*opened)
         {
@@ -2155,6 +2161,7 @@ fn collect_weight_tensors(ops: &[Op]) -> Vec<T> {
 /// tensor and each weight batch, with opening proofs computed by the prover.
 /// The proof carries only commitment roots and openings -- never the committed
 /// tensor data -- so the verifier is root-only.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct CommittedShardDagProof {
     pub shards: Vec<OpShardProof>,
     pub boundary_tensors: Vec<T>,
@@ -2191,7 +2198,7 @@ pub fn prove_committed_shard_dag(
             .expect("honest committed bind");
         boundary_commitments.push(BoundaryCommit {
             commitment: committed.commitment,
-            protocol: committed.protocol,
+            arity: store.get(t).len().trailing_zeros() as usize,
         });
         cross_binds.push(sp);
     }
@@ -2206,6 +2213,7 @@ pub fn prove_committed_shard_dag(
         by_size.entry(v.len()).or_default().push((t, v));
     }
     let mut weight_batch_ctxs: Vec<zkie_core::pcs::committed::BatchCtx> = Vec::new();
+    let mut weight_arities: Vec<usize> = Vec::new();
     let mut weight_locs: std::collections::BTreeMap<T, (usize, usize)> =
         std::collections::BTreeMap::new();
     for (len, group) in by_size {
@@ -2216,6 +2224,7 @@ pub fn prove_committed_shard_dag(
         for (i, (t, _)) in group.iter().enumerate() {
             weight_locs.insert(*t, (bi, i));
         }
+        weight_arities.push(len.trailing_zeros() as usize);
         weight_batch_ctxs.push(batch);
     }
 
@@ -2240,12 +2249,12 @@ pub fn prove_committed_shard_dag(
 
     // Strip prover data: keep only the commitment root, protocol, and Whir.
     let mut weight_batches = Vec::with_capacity(weight_batch_ctxs.len());
-    for batch in weight_batch_ctxs {
+    for (batch, arity) in weight_batch_ctxs.into_iter().zip(weight_arities) {
         weight_batches.push(WeightBatchCommit {
             commitment: batch.commitment,
-            protocol: batch.protocol,
-            whir: batch.whir,
+            arity,
             num_tables: batch.num_tables,
+            whir: batch.whir,
         });
     }
 
@@ -2307,25 +2316,9 @@ pub fn verify_committed_shard_dag(
                 if wi >= proof.weight_openings.len() {
                     return false;
                 }
-                let (open, opened) = &proof.weight_openings[wi];
+                let opening = &proof.weight_openings[wi];
                 wi += 1;
-                let batch = &proof.weight_batches[bi];
-                if batch
-                    .whir
-                    .verify_batch(
-                        &batch.commitment,
-                        open,
-                        &batch.protocol,
-                        ti,
-                        batch.num_tables,
-                        pt,
-                    )
-                    .ok()
-                    != Some(*opened)
-                {
-                    return false;
-                }
-                if *opened != *ev {
+                if !verify_weight_batch(&proof.weight_batches[bi], ti, *ev, pt, opening) {
                     return false;
                 }
             }
@@ -2335,6 +2328,22 @@ pub fn verify_committed_shard_dag(
         return false;
     }
     true
+}
+
+/// Deserialize a committed shard-DAG proof and verify it, root-only: the proof
+/// carries commitment roots and opening proofs, never the committed tensor data.
+pub fn verify_committed_shard_dag_bytes(
+    proof_bytes: &[u8],
+    tables: &[&[Goldilocks]],
+    ops: &[Op],
+    ops_per_shard: usize,
+    whir: &zkie_core::pcs::whir::Whir,
+) -> bool {
+    let proof: CommittedShardDagProof = match bincode::deserialize(proof_bytes) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    verify_committed_shard_dag(tables, ops, ops_per_shard, whir, &proof)
 }
 
 /// Batch-commit same-size weight/bias tensors into ONE commitment -- the "global
@@ -2378,12 +2387,13 @@ pub fn verify_weight_batch(
     point: &[Goldilocks],
     open: &(zkie_core::pcs::whir::Proof, Goldilocks),
 ) -> bool {
+    let protocol = batch.whir.opening_protocol(batch.arity, batch.num_tables);
     batch
         .whir
         .verify_batch(
             &batch.commitment,
             &open.0,
-            &batch.protocol,
+            &protocol,
             idx,
             batch.num_tables,
             point,
@@ -3302,6 +3312,16 @@ mod tests {
         assert_eq!(proof.cross_binds.len(), 1);
         assert!(verify_committed_shard_dag(&store.owned_slices(), &ops, 2, &whir, &proof));
 
+        // Serialization roundtrip through the root-only bytes entry.
+        let bytes = bincode::serialize(&proof).unwrap();
+        assert!(verify_committed_shard_dag_bytes(
+            &bytes,
+            &store.owned_slices(),
+            &ops,
+            2,
+            &whir
+        ));
+
         // Tamper a boundary claim -> the committed cross-bind must reject.
         let bt = proof.boundary_tensors[0];
         for shard in proof.shards.iter_mut() {
@@ -3334,7 +3354,7 @@ mod tests {
             .collect();
         let commit = WeightBatchCommit {
             commitment: batch.commitment,
-            protocol: batch.protocol,
+            arity: n.trailing_zeros() as usize,
             whir: batch.whir,
             num_tables: batch.num_tables,
         };
@@ -3368,7 +3388,7 @@ mod tests {
         let batch2 = commit_weights_batch(&whir, &refs2);
         let wrong_commit = WeightBatchCommit {
             commitment: batch2.commitment,
-            protocol: batch2.protocol,
+            arity: n.trailing_zeros() as usize,
             whir: batch2.whir,
             num_tables: batch2.num_tables,
         };
