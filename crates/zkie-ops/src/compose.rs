@@ -714,7 +714,7 @@ pub enum OpProof {
     ),
     Projection(ProjectionProof),
     Add(VirtualProof, Vec<Goldilocks>),
-    Lookup(FractionalProof, Goldilocks, Goldilocks),
+    Lookup(FractionalProof, Vec<u32>, Vec<Goldilocks>, Goldilocks, Goldilocks),
     Softmax(SoftmaxRoundedProof),
     SoftmaxIndex,
     GeluIndex,
@@ -1455,7 +1455,13 @@ pub fn prove_shard_precomputed(
                     beta,
                     rng,
                 );
-                op_proofs.push(OpProof::Lookup(p, alpha, beta));
+                op_proofs.push(OpProof::Lookup(
+                    p,
+                    store.idx[idx].clone(),
+                    store.get(out).to_vec(),
+                    alpha,
+                    beta,
+                ));
             }
             Op::Softmax {
                 idx,
@@ -1741,15 +1747,8 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                     return false;
                 }
             }
-            (Op::Lookup { idx, out, table }, OpProof::Lookup(fp, alpha, beta)) => {
-                if !verify_lookup_fractional(
-                    fp,
-                    &ws.idx[*idx],
-                    ws.get(*out),
-                    ws.get(*table),
-                    *alpha,
-                    *beta,
-                ) {
+            (Op::Lookup { table, .. }, OpProof::Lookup(fp, l_idx, l_out, alpha, beta)) => {
+                if !verify_lookup_fractional(fp, l_idx, l_out, ws.get(*table), *alpha, *beta) {
                     return false;
                 }
             }
