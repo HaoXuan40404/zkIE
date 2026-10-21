@@ -446,8 +446,10 @@ claimed evaluations written into the proof, and the entry points take only
 `verify_shard_dag_bytes` path is functionally store-free; full soundness against
 a lying prover is the committed path (`prove_committed_shard_dag` /
 `verify_committed_shard_dag`, P3), which verifies WHIR openings for weights and
-shard boundaries and is covered by the store-free soundness unit tests (tampered
-boundary / weight / opening all rejected).
+shard boundaries. That committed verifier is root-only: it holds only the
+commitment roots and the WHIR opening proofs shipped in the proof, never the
+committed tensor data. It is covered by the store-free soundness unit tests
+(tampered boundary / weight / opening all rejected).
 
 Release build, 64-thread CPU. Same per-layer shard granularities as the
 op-primitive rows above.

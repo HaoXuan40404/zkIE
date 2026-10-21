@@ -2034,14 +2034,38 @@ pub fn verify_shard_dag(
 /// with `same_poly`. The commitment itself ties the two shards' claims to one
 /// tensor; the merge collapses them toward a single future opening. This is the
 /// "boundary commit" form of cross-shard binding (the Commit/Open stages) that
-/// the plain `prove_shard_dag` defers.
+/// the plain `prove_shard_dag` defers. The opening proofs are produced here (on
+/// the prover side) and carried in the proof, so the verifier never touches the
+/// committed tensor data.
+pub struct CommittedCrossBindProof {
+    pub same_poly: SamePolyProof,
+    pub openings: Vec<(zkie_core::pcs::whir::Proof, Goldilocks)>,
+}
+
+/// Verifier-side boundary commitment: the commitment root plus its opening
+/// protocol, WITHOUT the prover's Merkle data.
+pub struct BoundaryCommit {
+    pub commitment: zkie_core::pcs::whir::Commitment,
+    pub protocol: zkie_core::pcs::whir::OpeningProtocol,
+}
+
+/// Verifier-side weight batch commitment: root + protocol + the batch Whir +
+/// table count, WITHOUT the prover's Merkle data.
+pub struct WeightBatchCommit {
+    pub commitment: zkie_core::pcs::whir::Commitment,
+    pub protocol: zkie_core::pcs::whir::OpeningProtocol,
+    pub whir: zkie_core::pcs::whir::Whir,
+    pub num_tables: usize,
+}
+
 pub fn committed_cross_bind(
     whir: &zkie_core::pcs::whir::Whir,
     committed: &zkie_core::pcs::committed::Committed,
     tensor: &[Goldilocks],
     claims: &[(Vec<Goldilocks>, Goldilocks)],
     rng: &mut impl ChallengeSource,
-) -> Option<SamePolyProof> {
+) -> Option<CommittedCrossBindProof> {
+    let mut openings = Vec::with_capacity(claims.len());
     for (pt, expected) in claims {
         let (open, opened) = whir.open(committed.prover_data.clone(), &committed.protocol, pt);
         if whir
@@ -2054,32 +2078,38 @@ pub fn committed_cross_bind(
         if opened != *expected || opened != mle::eval(tensor, pt) {
             return None;
         }
+        openings.push((open, opened));
     }
-    Some(prove_same_poly(tensor, claims, rng))
+    Some(CommittedCrossBindProof {
+        same_poly: prove_same_poly(tensor, claims, rng),
+        openings,
+    })
 }
 
-/// Verify a [`committed_cross_bind`] proof: open each claim against the
-/// commitment, then verify the merged `same_poly`.
+/// Verify a [`committed_cross_bind`] proof: verify each WHIR opening against the
+/// commitment root, then verify the merged `same_poly`. No tensor data is read.
 pub fn verify_committed_cross_bind(
     whir: &zkie_core::pcs::whir::Whir,
-    committed: &zkie_core::pcs::committed::Committed,
+    committed: &BoundaryCommit,
     claims: &[(Vec<Goldilocks>, Goldilocks)],
-    proof: &SamePolyProof,
+    proof: &CommittedCrossBindProof,
 ) -> bool {
-    for (pt, expected) in claims {
-        let (open, opened) = whir.open(committed.prover_data.clone(), &committed.protocol, pt);
+    if proof.openings.len() != claims.len() {
+        return false;
+    }
+    for ((pt, expected), (open, opened)) in claims.iter().zip(proof.openings.iter()) {
         if whir
-            .verify(&committed.commitment, &open, &committed.protocol, pt)
+            .verify(&committed.commitment, open, &committed.protocol, pt)
             .ok()
-            != Some(opened)
+            != Some(*opened)
         {
             return false;
         }
-        if opened != *expected {
+        if *opened != *expected {
             return false;
         }
     }
-    verify_same_poly(proof, claims).is_some()
+    verify_same_poly(&proof.same_poly, claims).is_some()
 }
 
 /// Collect the tensor ids of model weights: read but never written, and not a
@@ -2121,14 +2151,17 @@ fn collect_weight_tensors(ops: &[Op]) -> Vec<T> {
 }
 
 /// A committed shard-DAG proof: every shard proven as before (plain sumchecks,
-/// virtual intermediates), plus a WHIR commitment per cross-shard boundary tensor,
-/// per-size weight batches, and a committed cross-shard binding.
+/// virtual intermediates), plus WHIR commitments for each cross-shard boundary
+/// tensor and each weight batch, with opening proofs computed by the prover.
+/// The proof carries only commitment roots and openings -- never the committed
+/// tensor data -- so the verifier is root-only.
 pub struct CommittedShardDagProof {
     pub shards: Vec<OpShardProof>,
     pub boundary_tensors: Vec<T>,
-    pub boundary_commitments: Vec<zkie_core::pcs::committed::Committed>,
-    pub cross_binds: Vec<SamePolyProof>,
-    pub weight_batches: Vec<zkie_core::pcs::committed::BatchCtx>,
+    pub boundary_commitments: Vec<BoundaryCommit>,
+    pub cross_binds: Vec<CommittedCrossBindProof>,
+    pub weight_batches: Vec<WeightBatchCommit>,
+    pub weight_openings: Vec<(zkie_core::pcs::whir::Proof, Goldilocks)>,
     pub weight_locs: std::collections::BTreeMap<T, (usize, usize)>,
 }
 
@@ -2143,12 +2176,9 @@ pub fn prove_committed_shard_dag(
     let boundary_tensors = plain.cross_tensors.clone();
 
     let mut boundary_commitments = Vec::with_capacity(boundary_tensors.len());
-    for &t in &boundary_tensors {
-        boundary_commitments.push(zkie_core::pcs::committed::commit(whir, store.get(t)));
-    }
-
     let mut cross_binds = Vec::with_capacity(boundary_tensors.len());
-    for (i, &t) in boundary_tensors.iter().enumerate() {
+    for &t in &boundary_tensors {
+        let committed = zkie_core::pcs::committed::commit(whir, store.get(t));
         let mut claims = Vec::new();
         for shard in &plain.shards {
             for (tt, pt, ev) in &shard.claims {
@@ -2157,12 +2187,17 @@ pub fn prove_committed_shard_dag(
                 }
             }
         }
-        let sp = committed_cross_bind(whir, &boundary_commitments[i], store.get(t), &claims, rng)
+        let sp = committed_cross_bind(whir, &committed, store.get(t), &claims, rng)
             .expect("honest committed bind");
+        boundary_commitments.push(BoundaryCommit {
+            commitment: committed.commitment,
+            protocol: committed.protocol,
+        });
         cross_binds.push(sp);
     }
 
-    // Commit weights (grouped by size); opened lazily at their claim points.
+    // Commit weights (grouped by size); open each weight claim at its claim
+    // point, then strip the prover's Merkle data from the proof.
     let weight_tensors = collect_weight_tensors(ops);
     let mut by_size: std::collections::BTreeMap<usize, Vec<(T, &[Goldilocks])>> =
         std::collections::BTreeMap::new();
@@ -2170,18 +2205,48 @@ pub fn prove_committed_shard_dag(
         let v = store.get(t);
         by_size.entry(v.len()).or_default().push((t, v));
     }
-    let mut weight_batches: Vec<zkie_core::pcs::committed::BatchCtx> = Vec::new();
+    let mut weight_batch_ctxs: Vec<zkie_core::pcs::committed::BatchCtx> = Vec::new();
     let mut weight_locs: std::collections::BTreeMap<T, (usize, usize)> =
         std::collections::BTreeMap::new();
     for (len, group) in by_size {
         let whir = zkie_core::pcs::whir::Whir::new_testing(len.trailing_zeros() as usize);
         let refs: Vec<&[Goldilocks]> = group.iter().map(|(_, v)| *v).collect();
         let batch = commit_weights_batch(&whir, &refs);
-        let bi = weight_batches.len();
+        let bi = weight_batch_ctxs.len();
         for (i, (t, _)) in group.iter().enumerate() {
             weight_locs.insert(*t, (bi, i));
         }
-        weight_batches.push(batch);
+        weight_batch_ctxs.push(batch);
+    }
+
+    // Compute the WHIR openings for every weight claim (prover side).
+    let mut weight_openings = Vec::new();
+    for shard in &plain.shards {
+        for (t, pt, ev) in &shard.claims {
+            if let Some(&(bi, ti)) = weight_locs.get(t) {
+                let batch = &weight_batch_ctxs[bi];
+                let (open, opened) = batch.whir.open_batch(
+                    batch.prover_data.clone(),
+                    &batch.protocol,
+                    ti,
+                    batch.num_tables,
+                    pt,
+                );
+                debug_assert_eq!(opened, *ev, "honest weight opening mismatch");
+                weight_openings.push((open, opened));
+            }
+        }
+    }
+
+    // Strip prover data: keep only the commitment root, protocol, and Whir.
+    let mut weight_batches = Vec::with_capacity(weight_batch_ctxs.len());
+    for batch in weight_batch_ctxs {
+        weight_batches.push(WeightBatchCommit {
+            commitment: batch.commitment,
+            protocol: batch.protocol,
+            whir: batch.whir,
+            num_tables: batch.num_tables,
+        });
     }
 
     CommittedShardDagProof {
@@ -2190,12 +2255,13 @@ pub fn prove_committed_shard_dag(
         boundary_commitments,
         cross_binds,
         weight_batches,
+        weight_openings,
         weight_locs,
     }
 }
 
 pub fn verify_committed_shard_dag(
-    store: &Store,
+    tables: &[&[Goldilocks]],
     ops: &[Op],
     ops_per_shard: usize,
     whir: &zkie_core::pcs::whir::Whir,
@@ -2209,7 +2275,7 @@ pub fn verify_committed_shard_dag(
         return false;
     }
     for (i, (s, e)) in ranges.iter().enumerate() {
-        if !verify_shard(&store.owned_slices(), &ops[*s..*e], &proof.shards[i]) {
+        if !verify_shard(tables, &ops[*s..*e], &proof.shards[i]) {
             return false;
         }
     }
@@ -2233,22 +2299,46 @@ pub fn verify_committed_shard_dag(
         }
     }
 
-    // Verify weight openings against the committed weight batches.
+    // Verify weight openings against the committed weight roots.
+    let mut wi = 0usize;
     for shard in &proof.shards {
         for (t, pt, ev) in &shard.claims {
             if let Some(&(bi, ti)) = proof.weight_locs.get(t) {
-                if !verify_weight_batch(&proof.weight_batches[bi], ti, *ev, pt) {
+                if wi >= proof.weight_openings.len() {
+                    return false;
+                }
+                let (open, opened) = &proof.weight_openings[wi];
+                wi += 1;
+                let batch = &proof.weight_batches[bi];
+                if batch
+                    .whir
+                    .verify_batch(
+                        &batch.commitment,
+                        open,
+                        &batch.protocol,
+                        ti,
+                        batch.num_tables,
+                        pt,
+                    )
+                    .ok()
+                    != Some(*opened)
+                {
+                    return false;
+                }
+                if *opened != *ev {
                     return false;
                 }
             }
         }
     }
+    if wi != proof.weight_openings.len() {
+        return false;
+    }
     true
 }
 
-/// Batch-commit same-size weight/bias tensors into ONE commitment — the "global
-/// weights commit": commit once, open per-use. The verifier opens a weight
-/// against this single commitment instead of trusting raw values.
+/// Batch-commit same-size weight/bias tensors into ONE commitment -- the "global
+/// weights commit": commit once, open per-use.
 pub fn commit_weights_batch(
     whir: &zkie_core::pcs::whir::Whir,
     tensors: &[&[Goldilocks]],
@@ -2263,37 +2353,44 @@ pub fn commit_weights_batch(
     }
 }
 
-/// Open the `idx`-th weight of a batch commitment at `point` and verify it
-/// equals `tensor`'s MLE evaluation there.
-pub fn verify_weight_batch(
+/// Open the `idx`-th weight of a batch commitment at `point` (prover side):
+/// returns the WHIR opening proof and the opened value.
+pub fn open_weight_batch(
     batch: &zkie_core::pcs::committed::BatchCtx,
     idx: usize,
-    expected: Goldilocks,
     point: &[Goldilocks],
-) -> bool {
-    let (open, ev) = batch.whir.open_batch(
+) -> (zkie_core::pcs::whir::Proof, Goldilocks) {
+    batch.whir.open_batch(
         batch.prover_data.clone(),
         &batch.protocol,
         idx,
         batch.num_tables,
         point,
-    );
-    if batch
+    )
+}
+
+/// Verify a precomputed weight opening against the commitment root: the verifier
+/// never holds the weight tensor data.
+pub fn verify_weight_batch(
+    batch: &WeightBatchCommit,
+    idx: usize,
+    expected: Goldilocks,
+    point: &[Goldilocks],
+    open: &(zkie_core::pcs::whir::Proof, Goldilocks),
+) -> bool {
+    batch
         .whir
         .verify_batch(
             &batch.commitment,
-            &open,
+            &open.0,
             &batch.protocol,
             idx,
             batch.num_tables,
             point,
         )
         .ok()
-        != Some(ev)
-    {
-        return false;
-    }
-    ev == expected
+        == Some(open.1)
+        && open.1 == expected
 }
 
 /// A projection block proven with committed weights: the matmul keeps the
@@ -3104,7 +3201,7 @@ mod tests {
         ];
 
         let proof = committed_cross_bind(&whir, &c, &f, &claims, &mut rng).expect("honest bind");
-        assert_eq!(proof.coeffs.len(), 2);
+        assert_eq!(proof.same_poly.coeffs.len(), 2);
 
         // A wrong claimed eval must fail the commitment check.
         let bad = vec![
@@ -3203,7 +3300,7 @@ mod tests {
         assert_eq!(proof.boundary_tensors.len(), 1);
         assert_eq!(proof.boundary_commitments.len(), 1);
         assert_eq!(proof.cross_binds.len(), 1);
-        assert!(verify_committed_shard_dag(&store, &ops, 2, &whir, &proof));
+        assert!(verify_committed_shard_dag(&store.owned_slices(), &ops, 2, &whir, &proof));
 
         // Tamper a boundary claim -> the committed cross-bind must reject.
         let bt = proof.boundary_tensors[0];
@@ -3212,7 +3309,7 @@ mod tests {
                 *ev = *ev + Goldilocks::ONE;
             }
         }
-        assert!(!verify_committed_shard_dag(&store, &ops, 2, &whir, &proof));
+        assert!(!verify_committed_shard_dag(&store.owned_slices(), &ops, 2, &whir, &proof));
     }
 
     #[test]
@@ -3232,14 +3329,35 @@ mod tests {
         assert_eq!(batch.num_tables, 4);
 
         let point: Vec<Goldilocks> = (0..6).map(|_| rng.field()).collect();
+        let opens: Vec<_> = (0..4)
+            .map(|i| open_weight_batch(&batch, i, &point))
+            .collect();
+        let commit = WeightBatchCommit {
+            commitment: batch.commitment,
+            protocol: batch.protocol,
+            whir: batch.whir,
+            num_tables: batch.num_tables,
+        };
         for (i, w) in weights.iter().enumerate() {
-            assert!(verify_weight_batch(&batch, i, mle::eval(w, &point), &point));
+            assert!(verify_weight_batch(
+                &commit,
+                i,
+                mle::eval(w, &point),
+                &point,
+                &opens[i]
+            ));
         }
 
         // A wrong tensor at a table index must fail.
         let mut bad = weights[0].clone();
         bad[0] = bad[0] + Goldilocks::ONE;
-        assert!(!verify_weight_batch(&batch, 0, mle::eval(&bad, &point), &point));
+        assert!(!verify_weight_batch(
+            &commit,
+            0,
+            mle::eval(&bad, &point),
+            &point,
+            &opens[0]
+        ));
     }
 
     #[test]
