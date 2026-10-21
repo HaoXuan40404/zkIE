@@ -1689,12 +1689,7 @@ pub fn prove_shard_precomputed(
 
 /// Verify a shard proof (recomputes the witness first).
 pub fn verify_shard(store: &Store, ops: &[Op], proof: &OpShardProof) -> bool {
-    let mut ws = Store {
-        v: store.v.clone(),
-        idx: store.idx.clone(),
-    };
-    forward_ops(&mut ws, ops);
-    verify_shard_precomputed(&ws, ops, proof)
+    verify_shard_precomputed(store, ops, proof)
 }
 
 /// Verify a shard proof against an already-materialized witness store. Read-only
@@ -1957,7 +1952,7 @@ pub fn prove_shard_dag(
 }
 
 pub fn verify_shard_dag(
-    store: &mut Store,
+    store: &Store,
     ops: &[Op],
     ops_per_shard: usize,
     proof: &ShardDagProof,
@@ -1967,11 +1962,6 @@ pub fn verify_shard_dag(
         return false;
     }
 
-    // Recompute the witness in-place to get fresh tensor values for binding evals.
-    forward_ops(store, ops);
-    let store: &Store = &*store;
-
-    // Verify each shard in parallel against the shared fresh witness.
     let all_ok = ranges
         .par_iter()
         .enumerate()
@@ -1981,14 +1971,13 @@ pub fn verify_shard_dag(
         return false;
     }
 
-    // Rebuild the same cross-shard grouping (points only; evals recomputed).
-    let mut by_tensor: std::collections::BTreeMap<T, Vec<Vec<Goldilocks>>> =
+    let mut by_tensor: std::collections::BTreeMap<T, Vec<(Vec<Goldilocks>, Goldilocks)>> =
         std::collections::BTreeMap::new();
     let mut tensor_shards: std::collections::BTreeMap<T, std::collections::HashSet<usize>> =
         std::collections::BTreeMap::new();
     for (si, shard) in proof.shards.iter().enumerate() {
-        for (t, pt, _) in &shard.claims {
-            by_tensor.entry(*t).or_default().push(pt.clone());
+        for (t, pt, ev) in &shard.claims {
+            by_tensor.entry(*t).or_default().push((pt.clone(), *ev));
             tensor_shards.entry(*t).or_default().insert(si);
         }
     }
@@ -2003,11 +1992,7 @@ pub fn verify_shard_dag(
         return false;
     }
     for (ci, &t) in proof.cross_tensors.iter().enumerate() {
-        let claims: Vec<(Vec<Goldilocks>, Goldilocks)> = by_tensor[&t]
-            .iter()
-            .map(|pt| (pt.clone(), mle::eval(store.get(t), pt)))
-            .collect();
-        if verify_same_poly(&proof.cross_binds[ci], &claims).is_none() {
+        if verify_same_poly(&proof.cross_binds[ci], &by_tensor[&t]).is_none() {
             return false;
         }
     }
