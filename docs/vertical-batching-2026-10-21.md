@@ -28,7 +28,7 @@ codeword within the PoW budget).
 | TimesFM 200M | seq=16, pps=108 | 26.01s (first) | 77.03s | 11.66s | - | 27.7GB |
 | Gemma 3 | seq=16, pps=53 | 9.22s (first) | 48.91s | 16.76s | 16/16 | 25.6GB |
 | Gemma 3 | seq=512, pps=53 | 2.56s (cached) | 72.21s | 34.92s | 505/512 | 28.2GB |
-| DeepSeek-V2-Lite | seq=16 | 224.05s (cached) | 2411.20s | 271.06s | ok | 124.96GB |
+| DeepSeek-V2-Lite | seq=16 | 682.10s (first) | 1677.71s | 269.37s | ok | 125.06GB |
 
 `Commit` is the model-commitment phase: pack + WHIR commit + cache write on the
 first run, or cache load on later runs. GPT-2/Gemma 3 seq=512 are cached runs;

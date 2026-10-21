@@ -129,12 +129,12 @@ is in [`docs/benchmarks.md`](docs/benchmarks.md).
 
 | Model | Active / Total params | Setup | Prove | Verify | Peak RSS |
 | --- | --- | --- | --- | --- | --- |
-| TimesFM 1.0 200M | 200M / 200M | seq=16, 20 shards (per layer) | ~28.2 s | ~11.0 s | ~13.8 GB |
-| GPT-2 124M | 124M / 124M | seq=16, 13 shards (per layer) | ~18.7 s | ~8.5 s | ~39.3 GB |
-| GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer) | **~34.3 s** | **~21.2 s** | ~42.5 GB |
-| Gemma 3 270M | 270M / 270M | seq=16, 22 shards (per layer) | ~33.6 s | ~16.9 s | ~24.3 GB |
-| Gemma 3 270M | 270M / 270M | seq=512, 22 shards (per layer) | ~58.5 s | ~38.6 s | ~34.4 GB |
-| DeepSeek-V2-Lite | 2.4B / 15.7B | seq=16, 21 shards (lazy-open MoE, mmap weights) | ~515.2 s | ~268.1 s | ~124.9 GB |
+| TimesFM 1.0 200M | 200M / 200M | seq=16, 108 ops/shard | ~77.0 s | ~11.7 s | ~27.7 GB |
+| GPT-2 124M | 124M / 124M | seq=16, 13 shards (per layer) | ~34.6 s | ~9.5 s | - |
+| GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer) | **~47.7 s** | **~20.0 s** | - |
+| Gemma 3 270M | 270M / 270M | seq=16, 22 shards (per layer) | ~48.9 s | ~16.8 s | ~25.6 GB |
+| Gemma 3 270M | 270M / 270M | seq=512, 22 shards (per layer) | ~72.2 s | ~34.9 s | ~28.2 GB |
+| DeepSeek-V2-Lite | 2.4B / 15.7B | seq=16, 21 shards (lazy-open MoE, mmap weights) | ~1677.7 s (~28.0 min) | ~269.4 s (~4.5 min) | ~125.1 GB |
 | DeepSeek-V2-Lite | 2.4B / 15.7B | seq=512, 28 shards (lazy-open MoE, mmap weights) | ~1547.3 s (~25.8 min) | ~1065.3 s (~17.8 min) | ~374.4 GB |
 | DeepSeek-V4.1-Flash | 8B/16B* / 552B | MoE + CSA2 + vision (planned) | - | - | - |
 
