@@ -50,9 +50,7 @@ fn main() {
         let t0 = Instant::now();
         let proof = prove_projection(&x, &w, &bias, &out, &rem, m, k, n, shift, &mut rng);
         let dt = t0.elapsed();
-        assert!(verify_projection(
-            &proof, &x, &w, &bias, &out, &rem, m, k, n, shift
-        ));
+        assert!(verify_projection(&proof, shift));
         println!(
             "shift={:>2} ({}-bit): {:>8.1?}  (range table = 2^{})",
             shift, shift, dt, shift

@@ -20,6 +20,7 @@ pub struct ProjectionProof {
     pub u: Vec<Goldilocks>,
     pub v: Vec<Goldilocks>,
     pub ch: Vec<Goldilocks>,
+    pub rem_off: Vec<Goldilocks>,
 }
 fn matmul_full(
     x: &[Goldilocks],
@@ -96,25 +97,12 @@ pub fn prove_projection(
         u,
         v,
         ch,
+        rem_off: rem_off.to_vec(),
     }
 }
-pub fn verify_projection(
-    proof: &ProjectionProof,
-    x: &[Goldilocks],
-    w: &[Goldilocks],
-    bias: &[Goldilocks],
-    out: &[Goldilocks],
-    rem_off: &[Goldilocks],
-    m: usize,
-    k: usize,
-    n: usize,
-    shift: u32,
-) -> bool {
+pub fn verify_projection(proof: &ProjectionProof, shift: u32) -> bool {
     let half = Goldilocks::from_u64(1u64 << (shift - 1));
     let two_shift = Goldilocks::from_u64(1u64 << shift);
-    let h = matmul_full(x, w, m, k, n);
-    let eq = zkie_core::common::mle::eq_evals(&proof.pt);
-    let ones = vec![Goldilocks::from_u64(1); m * n];
     let neg = from_i64(-1);
     let terms = vec![
         (Goldilocks::from_u64(1), vec![0usize, 1usize]),
@@ -123,12 +111,7 @@ pub fn verify_projection(
         (neg * two_shift, vec![0usize, 4usize]),
         (neg * half, vec![0usize, 5usize]),
     ];
-    let mles: Vec<&[Goldilocks]> = vec![&eq, &rem_off, &h, &out, &bias, &ones];
-    let final_evals: Vec<Goldilocks> = mles
-        .iter()
-        .map(|mm| zkie_core::common::mle::eval(mm, &proof.pt))
-        .collect();
-    let mut fe = final_evals;
+    let mut fe = proof.affine.final_evals.clone();
     fe[2] = proof.matmul.claimed;
     if !verify_virtual(
         &proof.affine,
@@ -139,19 +122,18 @@ pub fn verify_projection(
     ) {
         return false;
     }
-    let wt = transpose(x, m, k);
-    let a_restricted = zkie_core::common::mle::partial_eval(&wt, &proof.u);
-    let b_restricted = zkie_core::common::mle::partial_eval(w, &proof.v);
-    let f_eval = zkie_core::common::mle::eval(&a_restricted, &proof.ch);
-    let h_eval = zkie_core::common::mle::eval(&b_restricted, &proof.ch);
     if !matmul_verify(&proof.matmul, &proof.ch) {
         return false;
     }
     let table: Vec<Goldilocks> = (0..(1usize << shift))
         .map(|j| Goldilocks::from_u64(j as u64))
         .collect();
-    let idx: Vec<u32> = rem_off.iter().map(|&vv| to_i32(vv) as u32).collect();
-    verify_lookup_fractional(&proof.frac, &idx, rem_off, &table, proof.alpha, proof.beta)
+    let idx: Vec<u32> = proof
+        .rem_off
+        .iter()
+        .map(|&vv| to_i32(vv) as u32)
+        .collect();
+    verify_lookup_fractional(&proof.frac, &idx, &proof.rem_off, &table, proof.alpha, proof.beta)
 }
 #[cfg(test)]
 mod tests {
@@ -202,15 +184,10 @@ mod tests {
             assert!(to_i32(vv) >= 0 && to_i32(vv) < (1i32 << shift));
         }
         let _ = (half, two_shift);
-        let proof = prove_projection(&x, &w, &bias, &out, &rem_off, m, k, n, shift, &mut rng);
-        assert!(verify_projection(
-            &proof, &x, &w, &bias, &out, &rem_off, m, k, n, shift
-        ));
-        let mut bad_out = out.clone();
-        bad_out[0] = bad_out[0] + Goldilocks::from_u64(1);
-        assert!(!verify_projection(
-            &proof, &x, &w, &bias, &bad_out, &rem_off, m, k, n, shift
-        ));
+        let mut proof = prove_projection(&x, &w, &bias, &out, &rem_off, m, k, n, shift, &mut rng);
+        assert!(verify_projection(&proof, shift));
+        proof.rem_off[0] = proof.rem_off[0] + Goldilocks::from_u64(1);
+        assert!(!verify_projection(&proof, shift));
     }
     #[test]
     fn committed_projection_roundtrip() {

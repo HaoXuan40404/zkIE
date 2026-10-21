@@ -185,18 +185,7 @@ pub fn verify_projection_chain(
 
     let mut prev = x;
     for (i, step) in steps.iter().enumerate() {
-        if !verify_projection(
-            &proof.steps[i],
-            prev,
-            &step.w,
-            &step.bias,
-            &ys[i],
-            &rems[i],
-            step.m,
-            step.k,
-            step.n,
-            step.shift,
-        ) {
+        if !verify_projection(&proof.steps[i], step.shift) {
             return false;
         }
         prev = &ys[i];
@@ -443,18 +432,7 @@ pub fn verify_residual_chain(
     let n = steps.len();
 
     for (i, step) in steps.iter().enumerate() {
-        if !verify_projection(
-            &proof.proj[i],
-            &xs[i],
-            &step.w,
-            &step.bias,
-            &ps[i],
-            &rems[i],
-            step.m,
-            step.k,
-            step.n,
-            step.shift,
-        ) {
+        if !verify_projection(&proof.proj[i], step.shift) {
             return false;
         }
     }
@@ -1753,42 +1731,10 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                     return false;
                 }
             }
-            (
-                Op::Projection {
-                    x,
-                    w,
-                    bias,
-                    out,
-                    rem,
-                    m,
-                    k,
-                    n,
-                    shift,
-                },
-                OpProof::Projection(pp),
-            ) => {
-                let wv = ws.materialize(*w);
-                if !verify_projection(
-                    pp,
-                    ws.get(*x),
-                    wv.as_ref(),
-                    ws.get(*bias),
-                    ws.get(*out),
-                    ws.get(*rem),
-                    *m,
-                    *k,
-                    *n,
-                    *shift,
-                ) {
+            (Op::Projection { shift, .. }, OpProof::Projection(pp)) => {
+                if !verify_projection(pp, *shift) {
                     return false;
                 }
-                let mut in_pt = pp.ch.clone();
-                in_pt.extend_from_slice(&pp.u);
-                claims.push((*x, in_pt.clone(), mle::eval(ws.get(*x), &in_pt)));
-                let mut weight_pt = pp.v.clone();
-                weight_pt.extend_from_slice(&pp.ch);
-                claims.push((*w, weight_pt.clone(), mle::eval(wv.as_ref(), &weight_pt)));
-                claims.push((*out, pp.pt.clone(), mle::eval(ws.get(*out), &pp.pt)));
             }
             (Op::Add { a, b, c }, OpProof::Add(vp, r)) => {
                 let fe = vec![
@@ -2491,7 +2437,7 @@ pub fn verify_projection_committed(
     n: usize,
     shift: u32,
 ) -> bool {
-    if !verify_projection(&proof.plain, x, w, bias, out, rem, m, k, n, shift) {
+    if !verify_projection(&proof.plain, shift) {
         return false;
     }
     let mut w_pt = proof.plain.v.clone();
