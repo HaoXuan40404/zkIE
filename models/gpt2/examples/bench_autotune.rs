@@ -386,7 +386,7 @@ fn main() {
         let prove_s = t0.elapsed().as_secs_f64();
         let t1 = std::time::Instant::now();
         assert!(
-            verify_shard_dag(&mut store, &ops, ops_per_shard, &proof),
+            verify_shard_dag(&store.owned_slices(), &ops, ops_per_shard, &proof),
             "sharded proof failed"
         );
         let verify_s = t1.elapsed().as_secs_f64();

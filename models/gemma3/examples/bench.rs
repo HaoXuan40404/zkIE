@@ -68,7 +68,7 @@ fn main() {
         let prove_t = t0.elapsed();
         let t1 = std::time::Instant::now();
         assert!(
-            verify_shard_dag(&mut store, &ops, pps, &proof),
+            verify_shard_dag(&store.owned_slices(), &ops, pps, &proof),
             "sharded proof failed"
         );
         assert!(vertical_weights_e2e::verify_weight_openings(

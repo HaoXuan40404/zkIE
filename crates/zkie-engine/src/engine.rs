@@ -159,7 +159,7 @@ pub fn verify_model(
     proof: &zkie_ops::compose::ShardDagProof,
 ) -> bool {
     let ops_per_shard = granularity.ops_per_shard(ops.len(), layers);
-    zkie_ops::compose::verify_shard_dag(store, ops, ops_per_shard, proof)
+    zkie_ops::compose::verify_shard_dag(&store.owned_slices(), ops, ops_per_shard, proof)
 }
 
 /// Per-stage CPU costs. `Forward`/`Sumcheck` are per op; `Commit`/`Open` are per

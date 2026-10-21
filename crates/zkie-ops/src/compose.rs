@@ -551,6 +551,18 @@ impl Store {
             TensorData::Mmap { .. } => panic!("get_mut() on mmap-backed tensor"),
         }
     }
+
+    /// Borrow every owned tensor as a slice, indexed by tensor id. Used to hand
+    /// the verifier only the public lookup tables (never activations/weights).
+    pub fn owned_slices(&self) -> Vec<&[Goldilocks]> {
+        self.v
+            .iter()
+            .map(|td| match td {
+                TensorData::Owned(v) => v.as_slice(),
+                TensorData::Mmap { .. } => &[],
+            })
+            .collect()
+    }
 }
 
 /// One op primitive. `Projection` = matmul + affine + round + range check;
@@ -1688,14 +1700,13 @@ pub fn prove_shard_precomputed(
 }
 
 /// Verify a shard proof (recomputes the witness first).
-pub fn verify_shard(store: &Store, ops: &[Op], proof: &OpShardProof) -> bool {
-    verify_shard_precomputed(store, ops, proof)
+pub fn verify_shard(tables: &[&[Goldilocks]], ops: &[Op], proof: &OpShardProof) -> bool {
+    verify_shard_precomputed(tables, ops, proof)
 }
 
 /// Verify a shard proof against an already-materialized witness store. Read-only
 /// on `store`, so shards can be verified in parallel.
-pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof) -> bool {
-    let ws = store;
+pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &OpShardProof) -> bool {
     assert_eq!(proof.ops.len(), ops.len());
     assert_eq!(proof.bound.len(), proof.binds.len());
 
@@ -1743,7 +1754,7 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 }
             }
             (Op::Lookup { table, .. }, OpProof::Lookup(fp, l_idx, l_out, alpha, beta)) => {
-                if !verify_lookup_fractional(fp, l_idx, l_out, ws.get(*table), *alpha, *beta) {
+                if !verify_lookup_fractional(fp, l_idx, l_out, tables[*table], *alpha, *beta) {
                     return false;
                 }
             }
@@ -1761,7 +1772,7 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
             (Op::GeluIndex { .. }, OpProof::GeluIndex) => {}
             (Op::StableSoftmaxIndex { .. }, OpProof::StableSoftmaxIndex) => {}
             (Op::Layernorm { rsqrt_table, .. }, OpProof::Layernorm(lp)) => {
-                if !verify_layernorm_chain(lp, ws.get(*rsqrt_table)) {
+                if !verify_layernorm_chain(lp, tables[*rsqrt_table]) {
                     return false;
                 }
             }
@@ -1769,7 +1780,7 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 Op::LayerNormCentered { rsqrt_table, n_real, .. },
                 OpProof::LayerNormCentered(lp),
             ) => {
-                if !verify_layer_norm_centered(lp, ws.get(*rsqrt_table), *n_real) {
+                if !verify_layer_norm_centered(lp, tables[*rsqrt_table], *n_real) {
                     return false;
                 }
             }
@@ -1827,7 +1838,7 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
             rp,
             &refs_idx,
             &refs_vals,
-            ws.get(tid),
+            tables[tid],
             proof.rsqrt_alpha,
             proof.rsqrt_beta,
         ) {
@@ -1844,7 +1855,7 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
             sp,
             &refs_idx,
             &refs_vals,
-            ws.get(tid),
+            tables[tid],
             proof.softmax_alpha,
             proof.softmax_beta,
         ) {
@@ -1952,7 +1963,7 @@ pub fn prove_shard_dag(
 }
 
 pub fn verify_shard_dag(
-    store: &Store,
+    tables: &[&[Goldilocks]],
     ops: &[Op],
     ops_per_shard: usize,
     proof: &ShardDagProof,
@@ -1965,7 +1976,7 @@ pub fn verify_shard_dag(
     let all_ok = ranges
         .par_iter()
         .enumerate()
-        .map(|(i, &(s, e))| verify_shard_precomputed(store, &ops[s..e], &proof.shards[i]))
+        .map(|(i, &(s, e))| verify_shard_precomputed(tables, &ops[s..e], &proof.shards[i]))
         .all(|ok| ok);
     if !all_ok {
         return false;
@@ -2117,7 +2128,7 @@ pub fn verify_committed_shard_dag(
         return false;
     }
     for (i, (s, e)) in ranges.iter().enumerate() {
-        if !verify_shard(store, &ops[*s..*e], &proof.shards[i]) {
+        if !verify_shard(&store.owned_slices(), &ops[*s..*e], &proof.shards[i]) {
             return false;
         }
     }

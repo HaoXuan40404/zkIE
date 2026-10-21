@@ -60,7 +60,7 @@ fn main() {
     );
 
     let t1 = std::time::Instant::now();
-    let ok = verify_shard_dag(&mut store, &ops, 718, &proof);
+    let ok = verify_shard_dag(&store.owned_slices(), &ops, 718, &proof);
     let open_ok = vertical_weights_e2e::verify_weight_openings(&batches, &openings);
     let verify_t = t1.elapsed();
     println!(
