@@ -142,6 +142,82 @@ pub fn verify_lookup_fractional(
     }
     verify_fractional(proof, &num, &den, Goldilocks::from_u64(0))
 }
+
+/// Batch several lookups into the SAME `table` into one fractional-sumcheck
+/// proof. All sample lists share one random challenge `(alpha, beta)`, so the
+/// sumcheck count drops from `xs.len()` to one and the table multiplicity is
+/// built only once.
+pub fn prove_lookup_fractional_batch(
+    xs: &[&[u32]],
+    ys: &[&[Goldilocks]],
+    table: &[Goldilocks],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+    rng: &mut XorShift64,
+) -> FractionalProof {
+    assert_eq!(xs.len(), ys.len());
+    let n: usize = xs.iter().map(|x| x.len()).sum();
+    let t = table.len();
+    let total = (n + t).next_power_of_two();
+    let mut num = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![Goldilocks::from_u64(1); total];
+    let mut pos = 0usize;
+    for (x, y) in xs.iter().zip(ys.iter()) {
+        assert_eq!(x.len(), y.len());
+        for i in 0..x.len() {
+            num[pos] = Goldilocks::from_u64(1);
+            den[pos] = alpha + Goldilocks::from_u64(x[i] as u64) + beta * y[i];
+            pos += 1;
+        }
+    }
+    let mut m = vec![0u64; t];
+    for x in xs {
+        for &i in *x {
+            m[i as usize] += 1;
+        }
+    }
+    for j in 0..t {
+        num[n + j] = from_i64(-(m[j] as i64));
+        den[n + j] = alpha + Goldilocks::from_u64(j as u64) + beta * table[j];
+    }
+    prove_fractional(&num, &den, rng)
+}
+
+pub fn verify_lookup_fractional_batch(
+    proof: &FractionalProof,
+    xs: &[&[u32]],
+    ys: &[&[Goldilocks]],
+    table: &[Goldilocks],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+) -> bool {
+    assert_eq!(xs.len(), ys.len());
+    let n: usize = xs.iter().map(|x| x.len()).sum();
+    let t = table.len();
+    let total = (n + t).next_power_of_two();
+    let mut num = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![Goldilocks::from_u64(1); total];
+    let mut pos = 0usize;
+    for (x, y) in xs.iter().zip(ys.iter()) {
+        assert_eq!(x.len(), y.len());
+        for i in 0..x.len() {
+            num[pos] = Goldilocks::from_u64(1);
+            den[pos] = alpha + Goldilocks::from_u64(x[i] as u64) + beta * y[i];
+            pos += 1;
+        }
+    }
+    let mut m = vec![0u64; t];
+    for x in xs {
+        for &i in *x {
+            m[i as usize] += 1;
+        }
+    }
+    for j in 0..t {
+        num[n + j] = from_i64(-(m[j] as i64));
+        den[n + j] = alpha + Goldilocks::from_u64(j as u64) + beta * table[j];
+    }
+    verify_fractional(proof, &num, &den, Goldilocks::from_u64(0))
+}
 #[cfg(test)]
 mod tests {
     use super::*;

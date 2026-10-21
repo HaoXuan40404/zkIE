@@ -12,25 +12,28 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use zkie_core::common::weights_io::WeightMmap;
-use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
+use crate::layer_norm_centered::{
+    layer_norm_forward as layer_norm_centered_forward, prove_layer_norm_centered,
+    verify_layer_norm_centered, LayerNormCenteredProof,
+};
+use crate::layernorm_chain::{prove_layernorm_chain, verify_layernorm_chain, LayernormChainProof};
+use crate::projection::{prove_projection, verify_projection, ProjectionProof};
+use crate::rms_norm::{prove_rms_norm, rms_norm_forward, verify_rms_norm, RmsNormProof};
+use crate::rope::{prove_rope, rope_forward, verify_rope, RoPEProof};
+use crate::softmax_scaled::{prove_softmax_rounded, verify_softmax_rounded, SoftmaxRoundedProof};
+use crate::topk::{prove_topk, topk_forward, verify_topk, TopKSelectProof};
 use rayon::prelude::*;
+use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
 use zkie_core::common::fixed_point::{from_i64, to_i64};
+use zkie_core::common::logup_gkr::{
+    prove_lookup_fractional, prove_lookup_fractional_batch, verify_lookup_fractional,
+    verify_lookup_fractional_batch, FractionalProof,
+};
 use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, MatmulProof};
 use zkie_core::common::mle;
-use crate::projection::{prove_projection, verify_projection, ProjectionProof};
 use zkie_core::common::same_poly::{prove_same_poly, verify_same_poly, SamePolyProof};
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
-use zkie_core::common::logup_gkr::{prove_lookup_fractional, verify_lookup_fractional, FractionalProof};
-use crate::softmax_scaled::{prove_softmax_rounded, verify_softmax_rounded, SoftmaxRoundedProof};
-use crate::layernorm_chain::{prove_layernorm_chain, verify_layernorm_chain, LayernormChainProof};
-use crate::layer_norm_centered::{
-    layer_norm_forward as layer_norm_centered_forward,
-    prove_layer_norm_centered, verify_layer_norm_centered, LayerNormCenteredProof,
-};
-use crate::rms_norm::{prove_rms_norm, verify_rms_norm, rms_norm_forward, RmsNormProof};
-use crate::rope::{prove_rope, verify_rope, rope_forward, RoPEProof};
-use crate::topk::{prove_topk, verify_topk, topk_forward, TopKSelectProof};
+use zkie_core::common::weights_io::WeightMmap;
 
 fn transpose(a: &[Goldilocks], m: usize, k: usize) -> Vec<Goldilocks> {
     let mut t = vec![Goldilocks::ZERO; k * m];
@@ -64,7 +67,14 @@ impl ProjectionStep {
     ) -> Self {
         assert_eq!(w.len(), k * n, "weight shape k*n");
         assert_eq!(bias.len(), m * n, "bias shape m*n");
-        ProjectionStep { m, k, n, shift, w, bias }
+        ProjectionStep {
+            m,
+            k,
+            n,
+            shift,
+            w,
+            bias,
+        }
     }
 }
 
@@ -86,10 +96,7 @@ fn round_div(a: i64, b: i64) -> i64 {
     }
 }
 
-fn projection_fwd(
-    x: &[Goldilocks],
-    step: &ProjectionStep,
-) -> (Vec<Goldilocks>, Vec<Goldilocks>) {
+fn projection_fwd(x: &[Goldilocks], step: &ProjectionStep) -> (Vec<Goldilocks>, Vec<Goldilocks>) {
     let h = crate::par::mm_par(x, &step.w, step.m, step.k, step.n, 64);
     let out: Vec<Goldilocks> = (0..step.m * step.n)
         .map(|ij| from_i64(round_div(to_i64(h[ij]), 1i64 << step.shift) + to_i64(step.bias[ij])))
@@ -138,16 +145,7 @@ pub fn prove_projection_chain(
     let mut prev = x;
     for (i, step) in steps.iter().enumerate() {
         let p = prove_projection(
-            prev,
-            &step.w,
-            &step.bias,
-            &ys[i],
-            &rems[i],
-            step.m,
-            step.k,
-            step.n,
-            step.shift,
-            rng,
+            prev, &step.w, &step.bias, &ys[i], &rems[i], step.m, step.k, step.n, step.shift, rng,
         );
         step_proofs.push(p);
         prev = &ys[i];
@@ -167,7 +165,10 @@ pub fn prove_projection_chain(
         binds.push(prove_same_poly(&ys[i], &claims, rng));
     }
 
-    ProjectionChainProof { steps: step_proofs, binds }
+    ProjectionChainProof {
+        steps: step_proofs,
+        binds,
+    }
 }
 
 /// Verify a chain proof. Returns true iff every projection is sound AND every
@@ -266,7 +267,11 @@ pub fn prove_projection_sharded(
         cross_binds.push(prove_same_poly(&ys[b], &claims, rng));
     }
 
-    ProjectionShardedProof { shards, cross_binds, boundary_steps }
+    ProjectionShardedProof {
+        shards,
+        cross_binds,
+        boundary_steps,
+    }
 }
 
 pub fn verify_projection_sharded(
@@ -332,7 +337,11 @@ pub struct ResidualChainProof {
 fn residual_forward(
     x: &[Goldilocks],
     steps: &[ProjectionStep],
-) -> (Vec<Vec<Goldilocks>>, Vec<Vec<Goldilocks>>, Vec<Vec<Goldilocks>>) {
+) -> (
+    Vec<Vec<Goldilocks>>,
+    Vec<Vec<Goldilocks>>,
+    Vec<Vec<Goldilocks>>,
+) {
     let mut cur = x.to_vec();
     let mut xs = vec![x.to_vec()];
     let mut ps = Vec::with_capacity(steps.len());
@@ -361,16 +370,7 @@ pub fn prove_residual_chain(
     let mut proj = Vec::with_capacity(n);
     for (i, step) in steps.iter().enumerate() {
         proj.push(prove_projection(
-            &xs[i],
-            &step.w,
-            &step.bias,
-            &ps[i],
-            &rems[i],
-            step.m,
-            step.k,
-            step.n,
-            step.shift,
-            rng,
+            &xs[i], &step.w, &step.bias, &ps[i], &rems[i], step.m, step.k, step.n, step.shift, rng,
         ));
     }
 
@@ -421,7 +421,12 @@ pub fn prove_residual_chain(
         same_p.push(prove_same_poly(&ps[i], &claims, rng));
     }
 
-    ResidualChainProof { proj, adds, same_x, same_p }
+    ResidualChainProof {
+        proj,
+        adds,
+        same_x,
+        same_p,
+    }
 }
 
 pub fn verify_residual_chain(
@@ -515,7 +520,11 @@ pub type T = usize;
 #[derive(Clone)]
 pub enum TensorData {
     Owned(Vec<Goldilocks>),
-    Mmap { mmap: Arc<WeightMmap>, start: usize, len: usize },
+    Mmap {
+        mmap: Arc<WeightMmap>,
+        start: usize,
+        len: usize,
+    },
 }
 
 /// A shard's tensor store: `v[id]` is a Goldilocks tensor; `idx[id]` is an
@@ -718,7 +727,12 @@ pub enum OpProof {
     Scale,
     ScaleVec,
     Relu,
-    MatMul(MatmulProof, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>),
+    MatMul(
+        MatmulProof,
+        Vec<Goldilocks>,
+        Vec<Goldilocks>,
+        Vec<Goldilocks>,
+    ),
     Projection(ProjectionProof),
     Add(VirtualProof, Vec<Goldilocks>),
     Lookup(FractionalProof, Goldilocks, Goldilocks),
@@ -803,6 +817,14 @@ pub fn rsqrt_index(var: i64) -> u32 {
 /// multiply-consumed activation tensor.
 pub struct OpShardProof {
     pub ops: Vec<OpProof>,
+    /// Batched rsqrt lookup (one sumcheck for every RmsNorm in this shard).
+    pub rsqrt_lookup: Option<FractionalProof>,
+    pub rsqrt_alpha: Goldilocks,
+    pub rsqrt_beta: Goldilocks,
+    /// Batched softmax exp lookup (one sumcheck for every Softmax in this shard).
+    pub softmax_lookup: Option<FractionalProof>,
+    pub softmax_alpha: Goldilocks,
+    pub softmax_beta: Goldilocks,
     /// `binds[j]` merges the claims of tensor `bound[j]`.
     pub bound: Vec<T>,
     pub binds: Vec<SamePolyProof>,
@@ -836,9 +858,23 @@ impl Op {
             Op::SoftmaxIndex { x, .. } => vec![x],
             Op::GeluIndex { x, .. } => vec![x],
             Op::StableSoftmaxIndex { x, mask, .. } => vec![x, mask],
-            Op::Layernorm { x, w, b, rsqrt_table, .. } => vec![x, w, b, rsqrt_table],
-            Op::LayerNormCentered { x, w, b, rsqrt_table, .. } => vec![x, w, b, rsqrt_table],
-            Op::RmsNorm { x, w, rsqrt_table, .. } => vec![x, w, rsqrt_table],
+            Op::Layernorm {
+                x,
+                w,
+                b,
+                rsqrt_table,
+                ..
+            } => vec![x, w, b, rsqrt_table],
+            Op::LayerNormCentered {
+                x,
+                w,
+                b,
+                rsqrt_table,
+                ..
+            } => vec![x, w, b, rsqrt_table],
+            Op::RmsNorm {
+                x, w, rsqrt_table, ..
+            } => vec![x, w, rsqrt_table],
             Op::RoPE { x, cos, sin, .. } => vec![x, cos, sin],
             Op::TopKSelect { x, .. } => vec![x],
             Op::ScaleGate { x, gate, .. } => vec![x, gate],
@@ -868,7 +904,14 @@ impl Op {
             Op::MatMul { c, .. } | Op::Add { c, .. } => vec![c],
             Op::Projection { out, rem, .. } => vec![out, rem],
             Op::Softmax { e, out, .. } => vec![e, out],
-            Op::TopKSelect { sel, thr, gate, d1, d2, .. } => vec![sel, thr, gate, d1, d2],
+            Op::TopKSelect {
+                sel,
+                thr,
+                gate,
+                d1,
+                d2,
+                ..
+            } => vec![sel, thr, gate, d1, d2],
         }
     }
 }
@@ -882,12 +925,16 @@ impl Op {
 pub fn shard_inputs(ops: &[Op], range: std::ops::Range<usize>) -> Vec<T> {
     let mut written = std::collections::BTreeSet::new();
     for op in &ops[range.clone()] {
-        for t in op.writes() { written.insert(t); }
+        for t in op.writes() {
+            written.insert(t);
+        }
     }
     let mut need = std::collections::BTreeSet::new();
     for op in &ops[range] {
         for t in op.reads() {
-            if !written.contains(&t) { need.insert(t); }
+            if !written.contains(&t) {
+                need.insert(t);
+            }
         }
     }
     need.into_iter().collect()
@@ -946,7 +993,10 @@ impl Store {
 /// After this returns, the tensors read or written by `ops[shard]` hold exactly
 /// the values `forward_ops` would have produced. Everything else is released.
 pub fn forward_shard(store: &mut Store, ops: &[Op], shard: std::ops::Range<usize>) {
-    assert!(shard.end <= ops.len(), "shard range past the end of the graph");
+    assert!(
+        shard.end <= ops.len(),
+        "shard range past the end of the graph"
+    );
     let prefix = &ops[..shard.end];
 
     // What the shard's proof will read: its ops' inputs and outputs.
@@ -990,36 +1040,67 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
             Op::Transpose { x, out, m, k } => {
                 store.v[out] = TensorData::Owned(transpose(store.get(x), m, k));
             }
-            Op::Scale { x, out, factor, shift } => {
-                let o: Vec<Goldilocks> = store.get(x)
+            Op::Scale {
+                x,
+                out,
+                factor,
+                shift,
+            } => {
+                let o: Vec<Goldilocks> = store
+                    .get(x)
                     .iter()
                     .map(|&v| from_i64(round_div(to_i64(v) * factor, 1i64 << shift)))
                     .collect();
                 store.v[out] = TensorData::Owned(o);
             }
-            Op::ScaleVec { x, scale, out, shift } => {
+            Op::ScaleVec {
+                x,
+                scale,
+                out,
+                shift,
+            } => {
                 let sv = store.get(scale);
-                let o: Vec<Goldilocks> = store.get(x)
+                let o: Vec<Goldilocks> = store
+                    .get(x)
                     .iter()
                     .enumerate()
-                    .map(|(i, &v)| from_i64(round_div(to_i64(v) * to_i64(sv[i % sv.len()]), 1i64 << shift)))
+                    .map(|(i, &v)| {
+                        from_i64(round_div(
+                            to_i64(v) * to_i64(sv[i % sv.len()]),
+                            1i64 << shift,
+                        ))
+                    })
                     .collect();
                 store.v[out] = TensorData::Owned(o);
             }
-            Op::ScaleGate { x, gate, col, out, m, n, h, shift } => {
+            Op::ScaleGate {
+                x,
+                gate,
+                col,
+                out,
+                m,
+                n,
+                h,
+                shift,
+            } => {
                 let gv = store.get(gate);
-                let o: Vec<Goldilocks> = store.get(x)
+                let o: Vec<Goldilocks> = store
+                    .get(x)
                     .iter()
                     .enumerate()
                     .map(|(ij, &v)| {
                         let t = ij / h;
-                        from_i64(round_div(to_i64(v) * to_i64(gv[t * n + col]), 1i64 << shift))
+                        from_i64(round_div(
+                            to_i64(v) * to_i64(gv[t * n + col]),
+                            1i64 << shift,
+                        ))
                     })
                     .collect();
                 store.v[out] = TensorData::Owned(o);
             }
             Op::Relu { x, out } => {
-                let o: Vec<Goldilocks> = store.get(x)
+                let o: Vec<Goldilocks> = store
+                    .get(x)
                     .iter()
                     .map(|&v| if to_i64(v) > 0 { v } else { Goldilocks::ZERO })
                     .collect();
@@ -1030,18 +1111,31 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                 let cval = crate::par::mm_par_fixed(store.get(a), bv.as_ref(), m, k, n);
                 store.v[c] = TensorData::Owned(cval);
             }
-            Op::Projection { x, w, bias, out, rem, m, k, n, shift } => {
+            Op::Projection {
+                x,
+                w,
+                bias,
+                out,
+                rem,
+                m,
+                k,
+                n,
+                shift,
+            } => {
                 let wv = store.materialize(w);
                 let h = crate::par::mm_par_fixed(store.get(x), wv.as_ref(), m, k, n);
                 let o: Vec<Goldilocks> = (0..m * n)
                     .map(|ij| {
-                        from_i64(round_div(to_i64(h[ij]), 1i64 << shift) + to_i64(store.get(bias)[ij]))
+                        from_i64(
+                            round_div(to_i64(h[ij]), 1i64 << shift) + to_i64(store.get(bias)[ij]),
+                        )
                     })
                     .collect();
                 let r: Vec<Goldilocks> = (0..m * n)
                     .map(|ij| {
                         from_i64(
-                            to_i64(h[ij]) - (to_i64(o[ij]) - to_i64(store.get(bias)[ij])) * (1i64 << shift)
+                            to_i64(h[ij])
+                                - (to_i64(o[ij]) - to_i64(store.get(bias)[ij])) * (1i64 << shift)
                                 + (1i64 << (shift - 1)),
                         )
                     })
@@ -1050,7 +1144,8 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                 store.v[rem] = TensorData::Owned(r);
             }
             Op::Add { a, b, c } => {
-                let s: Vec<Goldilocks> = store.get(a)
+                let s: Vec<Goldilocks> = store
+                    .get(a)
                     .iter()
                     .zip(store.get(b))
                     .map(|(x, y)| *x + *y)
@@ -1064,7 +1159,14 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                     .collect();
                 store.v[out] = TensorData::Owned(o);
             }
-            Op::Softmax { idx, e, out, table, m, n } => {
+            Op::Softmax {
+                idx,
+                e,
+                out,
+                table,
+                m,
+                n,
+            } => {
                 let ev: Vec<Goldilocks> = store.idx[idx]
                     .iter()
                     .map(|&i| store.get(table)[i as usize])
@@ -1073,26 +1175,46 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                     .map(|i| (0..n).fold(Goldilocks::ZERO, |acc, j| acc + ev[i * n + j]))
                     .collect();
                 let o: Vec<Goldilocks> = (0..m * n)
-                    .map(|ij| from_i64(round_div(to_i64(ev[ij]) * (1i64 << 16), to_i64(sum[ij / n]))))
+                    .map(|ij| {
+                        from_i64(round_div(
+                            to_i64(ev[ij]) * (1i64 << 16),
+                            to_i64(sum[ij / n]),
+                        ))
+                    })
                     .collect();
                 store.v[e] = TensorData::Owned(ev);
                 store.v[out] = TensorData::Owned(o);
             }
             Op::SoftmaxIndex { x, out, table_len } => {
-                let indices: Vec<u32> = store.get(x)
+                let indices: Vec<u32> = store
+                    .get(x)
                     .iter()
                     .map(|&s| ((to_i64(s).max(0)) as u64 % table_len as u64) as u32)
                     .collect();
                 store.idx[out] = indices;
             }
-            Op::GeluIndex { x, out, offset, table_len } => {
-                let indices: Vec<u32> = store.get(x)
+            Op::GeluIndex {
+                x,
+                out,
+                offset,
+                table_len,
+            } => {
+                let indices: Vec<u32> = store
+                    .get(x)
                     .iter()
                     .map(|&v| (to_i64(v) + offset).clamp(0, table_len as i64 - 1) as u32)
                     .collect();
                 store.idx[out] = indices;
             }
-            Op::StableSoftmaxIndex { x, mask, out, offset, table_len, m, n } => {
+            Op::StableSoftmaxIndex {
+                x,
+                mask,
+                out,
+                offset,
+                table_len,
+                m,
+                n,
+            } => {
                 let xv = store.get(x);
                 let mv = store.get(mask);
                 let masked: Vec<Goldilocks> = xv.iter().zip(mv).map(|(a, b)| *a + *b).collect();
@@ -1100,7 +1222,11 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                     .map(|i| {
                         (0..n).fold(masked[i * n], |acc, j| {
                             let v = masked[i * n + j];
-                            if to_i64(v) > to_i64(acc) { v } else { acc }
+                            if to_i64(v) > to_i64(acc) {
+                                v
+                            } else {
+                                acc
+                            }
                         })
                     })
                     .collect();
@@ -1112,13 +1238,25 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                     .collect();
                 store.idx[out] = indices;
             }
-            Op::Layernorm { x, w, b, out, rsqrt_table, m, d } => {
+            Op::Layernorm {
+                x,
+                w,
+                b,
+                out,
+                rsqrt_table,
+                m,
+                d,
+            } => {
                 let xv = store.get(x);
                 let wv = store.get(w);
                 let bv = store.get(b);
                 let table = store.get(rsqrt_table);
                 let mean_sq: Vec<Goldilocks> = (0..m)
-                    .map(|i| (0..d).fold(Goldilocks::ZERO, |acc, j| acc + xv[i * d + j] * xv[i * d + j]))
+                    .map(|i| {
+                        (0..d).fold(Goldilocks::ZERO, |acc, j| {
+                            acc + xv[i * d + j] * xv[i * d + j]
+                        })
+                    })
                     .collect();
                 let rsqrt_idx: Vec<u32> = mean_sq
                     .iter()
@@ -1129,22 +1267,70 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                 let o: Vec<Goldilocks> = (0..m * d).map(|ij| xv[ij] * scale[ij] + bv[ij]).collect();
                 store.v[out] = TensorData::Owned(o);
             }
-            Op::LayerNormCentered { x, w, b, out, rsqrt_table, m, d, n_real } => {
-                let (_, _, _, _, _, o, _, _, _, _, _) =
-                    layer_norm_centered_forward(store.get(x), store.get(w), store.get(b), store.get(rsqrt_table), m, d, n_real);
+            Op::LayerNormCentered {
+                x,
+                w,
+                b,
+                out,
+                rsqrt_table,
+                m,
+                d,
+                n_real,
+            } => {
+                let (_, _, _, _, _, o, _, _, _, _, _) = layer_norm_centered_forward(
+                    store.get(x),
+                    store.get(w),
+                    store.get(b),
+                    store.get(rsqrt_table),
+                    m,
+                    d,
+                    n_real,
+                );
                 store.v[out] = TensorData::Owned(o);
             }
-            Op::RmsNorm { x, w, out, rsqrt_table, m, d, n_real } => {
-                let (_, _, _, o, _, _, _, _, _) =
-                    rms_norm_forward(store.get(x), store.get(w), store.get(rsqrt_table), m, d, n_real);
+            Op::RmsNorm {
+                x,
+                w,
+                out,
+                rsqrt_table,
+                m,
+                d,
+                n_real,
+            } => {
+                let (_, _, _, o, _, _, _, _, _) = rms_norm_forward(
+                    store.get(x),
+                    store.get(w),
+                    store.get(rsqrt_table),
+                    m,
+                    d,
+                    n_real,
+                );
                 store.v[out] = TensorData::Owned(o);
             }
-            Op::RoPE { x, cos, sin, out, m, d, shift } => {
+            Op::RoPE {
+                x,
+                cos,
+                sin,
+                out,
+                m,
+                d,
+                shift,
+            } => {
                 let (o, _, _) =
                     rope_forward(store.get(x), store.get(cos), store.get(sin), m, d, shift);
                 store.v[out] = TensorData::Owned(o);
             }
-            Op::TopKSelect { x, sel, thr, gate, d1, d2, m, n, k } => {
+            Op::TopKSelect {
+                x,
+                sel,
+                thr,
+                gate,
+                d1,
+                d2,
+                m,
+                n,
+                k,
+            } => {
                 let (thr_v, sel_v, gate_v, d1_v, d2_v) = topk_forward(store.get(x), m, n, k);
                 store.v[thr] = TensorData::Owned(thr_v);
                 store.v[sel] = TensorData::Owned(sel_v);
@@ -1160,7 +1346,12 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
 /// on activation tensors, and `same_poly`-bind every tensor claimed more than
 /// once (at different points). `boundary` marks the shard output tensor(s) that
 /// are committed at the boundary and therefore not bound internally.
-pub fn prove_shard(store: &mut Store, ops: &[Op], boundary: &[T], rng: &mut XorShift64) -> OpShardProof {
+pub fn prove_shard(
+    store: &mut Store,
+    ops: &[Op],
+    boundary: &[T],
+    rng: &mut XorShift64,
+) -> OpShardProof {
     forward_ops(store, ops);
     prove_shard_precomputed(store, ops, boundary, rng)
 }
@@ -1174,7 +1365,6 @@ pub fn prove_shard_precomputed(
     boundary: &[T],
     rng: &mut XorShift64,
 ) -> OpShardProof {
-
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
     let add_terms = vec![
         (Goldilocks::ONE, vec![2usize]),
@@ -1185,6 +1375,10 @@ pub fn prove_shard_precomputed(
     // (tensor_id, point, eval) claims emitted by each op's proof.
     let mut claims: Vec<(T, Vec<Goldilocks>, Goldilocks)> = Vec::new();
     let mut op_proofs = Vec::with_capacity(ops.len());
+    let mut rsqrt_table_id: Option<T> = None;
+    let mut softmax_idx: Vec<&[u32]> = Vec::new();
+    let mut softmax_vals: Vec<&[Goldilocks]> = Vec::new();
+    let mut softmax_table_id: Option<T> = None;
 
     for op in ops {
         match *op {
@@ -1206,9 +1400,15 @@ pub fn prove_shard_precomputed(
             Op::MatMul { a, b, c, m, k, n } => {
                 let at = transpose(store.get(a), m, k);
                 let bv = store.materialize(b);
-                let u: Vec<Goldilocks> = (0..m.trailing_zeros() as usize).map(|_| rng.field()).collect();
-                let v: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
-                let ch: Vec<Goldilocks> = (0..k.trailing_zeros() as usize).map(|_| rng.field()).collect();
+                let u: Vec<Goldilocks> = (0..m.trailing_zeros() as usize)
+                    .map(|_| rng.field())
+                    .collect();
+                let v: Vec<Goldilocks> = (0..n.trailing_zeros() as usize)
+                    .map(|_| rng.field())
+                    .collect();
+                let ch: Vec<Goldilocks> = (0..k.trailing_zeros() as usize)
+                    .map(|_| rng.field())
+                    .collect();
                 let p = matmul_prove(&at, bv.as_ref(), store.get(c), m, k, n, &u, &v, &ch);
                 let mut ap = ch.clone();
                 ap.extend_from_slice(&u);
@@ -1221,7 +1421,17 @@ pub fn prove_shard_precomputed(
                 claims.push((c, cp.clone(), mle::eval(store.get(c), &cp)));
                 op_proofs.push(OpProof::MatMul(p, u, v, ch));
             }
-            Op::Projection { x, w, bias, out, rem, m, k, n, shift } => {
+            Op::Projection {
+                x,
+                w,
+                bias,
+                out,
+                rem,
+                m,
+                k,
+                n,
+                shift,
+            } => {
                 let wv = store.materialize(w);
                 let p = prove_projection(
                     store.get(x),
@@ -1229,11 +1439,18 @@ pub fn prove_shard_precomputed(
                     store.get(bias),
                     store.get(out),
                     store.get(rem),
-                    m, k, n, shift, rng,
+                    m,
+                    k,
+                    n,
+                    shift,
+                    rng,
                 );
                 let mut in_pt = p.ch.clone();
                 in_pt.extend_from_slice(&p.u);
                 claims.push((x, in_pt.clone(), mle::eval(store.get(x), &in_pt)));
+                let mut weight_pt = p.v.clone();
+                weight_pt.extend_from_slice(&p.ch);
+                claims.push((w, weight_pt.clone(), mle::eval(wv.as_ref(), &weight_pt)));
                 claims.push((out, p.pt.clone(), mle::eval(store.get(out), &p.pt)));
                 op_proofs.push(OpProof::Projection(p));
             }
@@ -1261,7 +1478,14 @@ pub fn prove_shard_precomputed(
                 );
                 op_proofs.push(OpProof::Lookup(p, alpha, beta));
             }
-            Op::Softmax { idx, e, out, table, m, n } => {
+            Op::Softmax {
+                idx,
+                e,
+                out,
+                table,
+                m,
+                n,
+            } => {
                 let p = prove_softmax_rounded(
                     &store.idx[idx],
                     store.get(e),
@@ -1271,7 +1495,14 @@ pub fn prove_shard_precomputed(
                     n,
                     rng,
                 );
-                claims.push((out, p.r_scale.clone(), mle::eval(store.get(out), &p.r_scale)));
+                claims.push((
+                    out,
+                    p.r_scale.clone(),
+                    mle::eval(store.get(out), &p.r_scale),
+                ));
+                softmax_idx.push(&store.idx[idx]);
+                softmax_vals.push(store.get(e));
+                softmax_table_id = Some(table);
                 op_proofs.push(OpProof::Softmax(p));
             }
             Op::SoftmaxIndex { .. } => {
@@ -1283,7 +1514,15 @@ pub fn prove_shard_precomputed(
             Op::StableSoftmaxIndex { .. } => {
                 op_proofs.push(OpProof::StableSoftmaxIndex);
             }
-            Op::Layernorm { x, w, b, out, rsqrt_table, m, d } => {
+            Op::Layernorm {
+                x,
+                w,
+                b,
+                out,
+                rsqrt_table,
+                m,
+                d,
+            } => {
                 let p = prove_layernorm_chain(
                     store.get(x),
                     store.get(w),
@@ -1296,7 +1535,16 @@ pub fn prove_shard_precomputed(
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
                 op_proofs.push(OpProof::Layernorm(p));
             }
-            Op::LayerNormCentered { x, w, b, out, rsqrt_table, m, d, n_real } => {
+            Op::LayerNormCentered {
+                x,
+                w,
+                b,
+                out,
+                rsqrt_table,
+                m,
+                d,
+                n_real,
+            } => {
                 let p = prove_layer_norm_centered(
                     store.get(x),
                     store.get(w),
@@ -1307,11 +1555,24 @@ pub fn prove_shard_precomputed(
                     n_real,
                     rng,
                 );
-                claims.push((x, p.centered_r.clone(), mle::eval(store.get(x), &p.centered_r)));
+                claims.push((
+                    x,
+                    p.centered_r.clone(),
+                    mle::eval(store.get(x), &p.centered_r),
+                ));
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
                 op_proofs.push(OpProof::LayerNormCentered(p));
             }
-            Op::RmsNorm { x, w, out, rsqrt_table, m, d, n_real } => {
+            Op::RmsNorm {
+                x,
+                w,
+                out,
+                rsqrt_table,
+                m,
+                d,
+                n_real,
+            } => {
+                rsqrt_table_id = Some(rsqrt_table);
                 let p = prove_rms_norm(
                     store.get(x),
                     store.get(w),
@@ -1324,7 +1585,15 @@ pub fn prove_shard_precomputed(
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
                 op_proofs.push(OpProof::RmsNorm(p));
             }
-            Op::RoPE { x, cos, sin, out, m, d, shift } => {
+            Op::RoPE {
+                x,
+                cos,
+                sin,
+                out,
+                m,
+                d,
+                shift,
+            } => {
                 let p = prove_rope(
                     store.get(x),
                     store.get(cos),
@@ -1338,7 +1607,17 @@ pub fn prove_shard_precomputed(
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
                 op_proofs.push(OpProof::RoPE(p));
             }
-            Op::TopKSelect { x, sel, thr, gate, d1, d2, m, n, k } => {
+            Op::TopKSelect {
+                x,
+                sel,
+                thr,
+                gate,
+                d1,
+                d2,
+                m,
+                n,
+                k,
+            } => {
                 let p = prove_topk(
                     store.get(x),
                     store.get(sel),
@@ -1380,12 +1659,54 @@ pub fn prove_shard_precomputed(
         binds.push(sp);
     }
 
-    OpShardProof { ops: op_proofs, bound, binds, claims: raw_claims }
+    // Batch every RmsNorm rsqrt lookup in this shard into a single sumcheck.
+    let mut rsqrt_idx: Vec<&[u32]> = Vec::new();
+    let mut rsqrt_vals: Vec<&[Goldilocks]> = Vec::new();
+    for p in &op_proofs {
+        if let OpProof::RmsNorm(rp) = p {
+            rsqrt_idx.push(&rp.s_index);
+            rsqrt_vals.push(&rp.rstd_vals);
+        }
+    }
+    let (rsqrt_lookup, rsqrt_alpha, rsqrt_beta) = if rsqrt_idx.is_empty() {
+        (None, Goldilocks::ZERO, Goldilocks::ZERO)
+    } else {
+        let a = rng.field();
+        let b = rng.field();
+        let tid = rsqrt_table_id.expect("rsqrt table");
+        let pr = prove_lookup_fractional_batch(&rsqrt_idx, &rsqrt_vals, store.get(tid), a, b, rng);
+        (Some(pr), a, b)
+    };
+    let (softmax_lookup, softmax_alpha, softmax_beta) = if softmax_idx.is_empty() {
+        (None, Goldilocks::ZERO, Goldilocks::ZERO)
+    } else {
+        let a = rng.field();
+        let b = rng.field();
+        let tid = softmax_table_id.expect("softmax table");
+        let pr = prove_lookup_fractional_batch(&softmax_idx, &softmax_vals, store.get(tid), a, b, rng);
+        (Some(pr), a, b)
+    };
+
+    OpShardProof {
+        ops: op_proofs,
+        rsqrt_lookup,
+        rsqrt_alpha,
+        rsqrt_beta,
+        softmax_lookup,
+        softmax_alpha,
+        softmax_beta,
+        bound,
+        binds,
+        claims: raw_claims,
+    }
 }
 
 /// Verify a shard proof (recomputes the witness first).
 pub fn verify_shard(store: &Store, ops: &[Op], proof: &OpShardProof) -> bool {
-    let mut ws = Store { v: store.v.clone(), idx: store.idx.clone() };
+    let mut ws = Store {
+        v: store.v.clone(),
+        idx: store.idx.clone(),
+    };
     forward_ops(&mut ws, ops);
     verify_shard_precomputed(&ws, ops, proof)
 }
@@ -1405,6 +1726,12 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
     ];
 
     let mut claims: Vec<(T, Vec<Goldilocks>, Goldilocks)> = Vec::new();
+    let mut rsqrt_idx: Vec<Vec<u32>> = Vec::new();
+    let mut rsqrt_vals: Vec<Vec<Goldilocks>> = Vec::new();
+    let mut rsqrt_table_id: Option<T> = None;
+    let mut softmax_idx: Vec<Vec<u32>> = Vec::new();
+    let mut softmax_vals: Vec<Vec<Goldilocks>> = Vec::new();
+    let mut softmax_table_id: Option<T> = None;
     for (op, p) in ops.iter().zip(&proof.ops) {
         match (op, p) {
             (Op::Transpose { .. }, OpProof::Transpose) => {
@@ -1416,7 +1743,17 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
             (Op::ScaleVec { .. }, OpProof::ScaleVec) => {}
             (Op::ScaleGate { .. }, OpProof::ScaleGate) => {}
             (Op::Relu { .. }, OpProof::Relu) => {}
-            (Op::MatMul { a, b, c, m, k, n: _ }, OpProof::MatMul(mp, u, v, ch)) => {
+            (
+                Op::MatMul {
+                    a,
+                    b,
+                    c,
+                    m,
+                    k,
+                    n: _,
+                },
+                OpProof::MatMul(mp, u, v, ch),
+            ) => {
                 let at = transpose(ws.get(*a), *m, *k);
                 let a_restricted = mle::partial_eval(&at, u);
                 let bv = ws.materialize(*b);
@@ -1437,7 +1774,17 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 claims.push((*c, cp.clone(), mle::eval(ws.get(*c), &cp)));
             }
             (
-                Op::Projection { x, w, bias, out, rem, m, k, n, shift },
+                Op::Projection {
+                    x,
+                    w,
+                    bias,
+                    out,
+                    rem,
+                    m,
+                    k,
+                    n,
+                    shift,
+                },
                 OpProof::Projection(pp),
             ) => {
                 let wv = ws.materialize(*w);
@@ -1448,13 +1795,19 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                     ws.get(*bias),
                     ws.get(*out),
                     ws.get(*rem),
-                    *m, *k, *n, *shift,
+                    *m,
+                    *k,
+                    *n,
+                    *shift,
                 ) {
                     return false;
                 }
                 let mut in_pt = pp.ch.clone();
                 in_pt.extend_from_slice(&pp.u);
                 claims.push((*x, in_pt.clone(), mle::eval(ws.get(*x), &in_pt)));
+                let mut weight_pt = pp.v.clone();
+                weight_pt.extend_from_slice(&pp.ch);
+                claims.push((*w, weight_pt.clone(), mle::eval(wv.as_ref(), &weight_pt)));
                 claims.push((*out, pp.pt.clone(), mle::eval(ws.get(*out), &pp.pt)));
             }
             (Op::Add { a, b, c }, OpProof::Add(vp, r)) => {
@@ -1482,7 +1835,17 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                     return false;
                 }
             }
-            (Op::Softmax { idx, e, out, table, m, n }, OpProof::Softmax(sp)) => {
+            (
+                Op::Softmax {
+                    idx,
+                    e,
+                    out,
+                    table,
+                    m,
+                    n,
+                },
+                OpProof::Softmax(sp),
+            ) => {
                 if !verify_softmax_rounded(
                     sp,
                     &ws.idx[*idx],
@@ -1494,14 +1857,32 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 ) {
                     return false;
                 }
-                claims.push((*out, sp.r_scale.clone(), mle::eval(ws.get(*out), &sp.r_scale)));
+                softmax_idx.push(ws.idx[*idx].clone());
+                softmax_vals.push(ws.get(*e).to_vec());
+                softmax_table_id = Some(*table);
+                claims.push((
+                    *out,
+                    sp.r_scale.clone(),
+                    mle::eval(ws.get(*out), &sp.r_scale),
+                ));
             }
             (Op::SoftmaxIndex { .. }, OpProof::SoftmaxIndex) => {
                 // No proof: the verifier recomputes `idx = softmax_index(scores)`.
             }
             (Op::GeluIndex { .. }, OpProof::GeluIndex) => {}
             (Op::StableSoftmaxIndex { .. }, OpProof::StableSoftmaxIndex) => {}
-            (Op::Layernorm { x, w, b, out, rsqrt_table, m, d }, OpProof::Layernorm(lp)) => {
+            (
+                Op::Layernorm {
+                    x,
+                    w,
+                    b,
+                    out,
+                    rsqrt_table,
+                    m,
+                    d,
+                },
+                OpProof::Layernorm(lp),
+            ) => {
                 if !verify_layernorm_chain(
                     lp,
                     ws.get(*x),
@@ -1515,7 +1896,19 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 }
                 claims.push((*out, lp.r_out.clone(), mle::eval(ws.get(*out), &lp.r_out)));
             }
-            (Op::LayerNormCentered { x, w, b, out, rsqrt_table, m, d, n_real }, OpProof::LayerNormCentered(lp)) => {
+            (
+                Op::LayerNormCentered {
+                    x,
+                    w,
+                    b,
+                    out,
+                    rsqrt_table,
+                    m,
+                    d,
+                    n_real,
+                },
+                OpProof::LayerNormCentered(lp),
+            ) => {
                 if !verify_layer_norm_centered(
                     lp,
                     ws.get(*x),
@@ -1528,10 +1921,25 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 ) {
                     return false;
                 }
-                claims.push((*x, lp.centered_r.clone(), mle::eval(ws.get(*x), &lp.centered_r)));
+                claims.push((
+                    *x,
+                    lp.centered_r.clone(),
+                    mle::eval(ws.get(*x), &lp.centered_r),
+                ));
                 claims.push((*out, lp.r_out.clone(), mle::eval(ws.get(*out), &lp.r_out)));
             }
-            (Op::RmsNorm { x, w, out, rsqrt_table, m, d, n_real }, OpProof::RmsNorm(p)) => {
+            (
+                Op::RmsNorm {
+                    x,
+                    w,
+                    out,
+                    rsqrt_table,
+                    m,
+                    d,
+                    n_real,
+                },
+                OpProof::RmsNorm(p),
+            ) => {
                 if !verify_rms_norm(
                     p,
                     ws.get(*x),
@@ -1543,9 +1951,25 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 ) {
                     return false;
                 }
+                let (_ms, s_idx, rstd_v, _out, _rem_out, _rem_lo, _rem_hi, _sum_sq, _rem_s) =
+                    rms_norm_forward(ws.get(*x), ws.get(*w), ws.get(*rsqrt_table), *m, *d, *n_real);
+                rsqrt_idx.push(s_idx);
+                rsqrt_vals.push(rstd_v);
+                rsqrt_table_id = Some(*rsqrt_table);
                 claims.push((*out, p.r_out.clone(), mle::eval(ws.get(*out), &p.r_out)));
             }
-            (Op::RoPE { x, cos, sin, out, m, d, shift }, OpProof::RoPE(p)) => {
+            (
+                Op::RoPE {
+                    x,
+                    cos,
+                    sin,
+                    out,
+                    m,
+                    d,
+                    shift,
+                },
+                OpProof::RoPE(p),
+            ) => {
                 if !verify_rope(
                     p,
                     ws.get(*x),
@@ -1560,8 +1984,32 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 }
                 claims.push((*out, p.r_out.clone(), mle::eval(ws.get(*out), &p.r_out)));
             }
-            (Op::TopKSelect { x, sel, thr, gate, d1, d2, m, n, k }, OpProof::TopKSelect(p)) => {
-                if !verify_topk(p, ws.get(*x), ws.get(*sel), ws.get(*thr), ws.get(*gate), ws.get(*d1), ws.get(*d2), *m, *n, *k) {
+            (
+                Op::TopKSelect {
+                    x,
+                    sel,
+                    thr,
+                    gate,
+                    d1,
+                    d2,
+                    m,
+                    n,
+                    k,
+                },
+                OpProof::TopKSelect(p),
+            ) => {
+                if !verify_topk(
+                    p,
+                    ws.get(*x),
+                    ws.get(*sel),
+                    ws.get(*thr),
+                    ws.get(*gate),
+                    ws.get(*d1),
+                    ws.get(*d2),
+                    *m,
+                    *n,
+                    *k,
+                ) {
                     return false;
                 }
                 claims.push((*x, p.r.clone(), mle::eval(ws.get(*x), &p.r)));
@@ -1594,6 +2042,41 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
         if verify_same_poly(&proof.binds[i], store.get(t), &bound_claims[i]).is_none() {
             return false;
         }
+    }
+    // Verify the batched rsqrt lookup over every RmsNorm in this shard.
+    if let Some(rp) = &proof.rsqrt_lookup {
+        let tid = rsqrt_table_id.expect("rsqrt table");
+        let refs_idx: Vec<&[u32]> = rsqrt_idx.iter().map(|v| v.as_slice()).collect();
+        let refs_vals: Vec<&[Goldilocks]> = rsqrt_vals.iter().map(|v| v.as_slice()).collect();
+        if !verify_lookup_fractional_batch(
+            rp,
+            &refs_idx,
+            &refs_vals,
+            ws.get(tid),
+            proof.rsqrt_alpha,
+            proof.rsqrt_beta,
+        ) {
+            return false;
+        }
+    } else if !rsqrt_idx.is_empty() {
+        return false;
+    }
+    if let Some(sp) = &proof.softmax_lookup {
+        let tid = softmax_table_id.expect("softmax table");
+        let refs_idx: Vec<&[u32]> = softmax_idx.iter().map(|v| v.as_slice()).collect();
+        let refs_vals: Vec<&[Goldilocks]> = softmax_vals.iter().map(|v| v.as_slice()).collect();
+        if !verify_lookup_fractional_batch(
+            sp,
+            &refs_idx,
+            &refs_vals,
+            ws.get(tid),
+            proof.softmax_alpha,
+            proof.softmax_beta,
+        ) {
+            return false;
+        }
+    } else if !softmax_idx.is_empty() {
+        return false;
     }
     true
 }
@@ -1670,7 +2153,11 @@ pub fn prove_shard_dag(
             cross_binds.push(sp);
         }
     }
-    ShardDagProof { shards, cross_tensors, cross_binds }
+    ShardDagProof {
+        shards,
+        cross_tensors,
+        cross_binds,
+    }
 }
 
 pub fn verify_shard_dag(
@@ -1854,7 +2341,10 @@ pub fn verify_committed_shard_dag(
         }
     }
 
-    let mut ws = Store { v: store.v.clone(), idx: store.idx.clone() };
+    let mut ws = Store {
+        v: store.v.clone(),
+        idx: store.idx.clone(),
+    };
     forward_ops(&mut ws, ops);
 
     for (i, &t) in proof.boundary_tensors.iter().enumerate() {
@@ -1904,12 +2394,23 @@ pub fn verify_weight_batch(
     tensor: &[Goldilocks],
     point: &[Goldilocks],
 ) -> bool {
-    let (open, ev) = batch
-        .whir
-        .open_batch(batch.prover_data.clone(), &batch.protocol, idx, batch.num_tables, point);
+    let (open, ev) = batch.whir.open_batch(
+        batch.prover_data.clone(),
+        &batch.protocol,
+        idx,
+        batch.num_tables,
+        point,
+    );
     if batch
         .whir
-        .verify_batch(&batch.commitment, &open, &batch.protocol, idx, batch.num_tables, point)
+        .verify_batch(
+            &batch.commitment,
+            &open,
+            &batch.protocol,
+            idx,
+            batch.num_tables,
+            point,
+        )
         .ok()
         != Some(ev)
     {
@@ -1963,7 +2464,11 @@ pub fn prove_projection_committed(
         bias_batch.num_tables,
         &plain.pt,
     );
-    CommittedProjectionProof { plain, w_open, bias_open }
+    CommittedProjectionProof {
+        plain,
+        w_open,
+        bias_open,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1990,7 +2495,14 @@ pub fn verify_projection_committed(
     w_pt.extend_from_slice(&proof.plain.ch);
     if w_batch
         .whir
-        .verify_batch(&w_batch.commitment, &proof.w_open.0, &w_batch.protocol, w_idx, w_batch.num_tables, &w_pt)
+        .verify_batch(
+            &w_batch.commitment,
+            &proof.w_open.0,
+            &w_batch.protocol,
+            w_idx,
+            w_batch.num_tables,
+            &w_pt,
+        )
         .ok()
         != Some(proof.w_open.1)
         || proof.w_open.1 != mle::eval(w, &w_pt)
@@ -1999,7 +2511,14 @@ pub fn verify_projection_committed(
     }
     if bias_batch
         .whir
-        .verify_batch(&bias_batch.commitment, &proof.bias_open.0, &bias_batch.protocol, bias_idx, bias_batch.num_tables, &proof.plain.pt)
+        .verify_batch(
+            &bias_batch.commitment,
+            &proof.bias_open.0,
+            &bias_batch.protocol,
+            bias_idx,
+            bias_batch.num_tables,
+            &proof.plain.pt,
+        )
         .ok()
         != Some(proof.bias_open.1)
         || proof.bias_open.1 != mle::eval(bias, &proof.plain.pt)
@@ -2032,22 +2551,70 @@ pub fn build_gpt2_layer(
     let mut ops = Vec::new();
 
     // pre-norm for attention
-    let ln1_w = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 5) as i64 + 1)).collect());
-    let ln1_b = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
+    let ln1_w = store.push(
+        (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 5) as i64 + 1))
+            .collect(),
+    );
+    let ln1_b = store.push(
+        (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+            .collect(),
+    );
     let h = store.push(vec![]);
-    ops.push(Op::Layernorm { x, w: ln1_w, b: ln1_b, out: h, rsqrt_table, m, d });
+    ops.push(Op::Layernorm {
+        x,
+        w: ln1_w,
+        b: ln1_b,
+        out: h,
+        rsqrt_table,
+        m,
+        d,
+    });
 
     // multi-head attention on h
     let mut head_outs = Vec::new();
     for _ in 0..heads {
-        let wq = store.push((0..d * dh).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let wk = store.push((0..d * dh).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let wv = store.push((0..d * dh).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let wo = store.push((0..dh * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let bq = store.push((0..m * dh).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let bk = store.push((0..m * dh).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let bv = store.push((0..m * dh).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let bo = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
+        let wq = store.push(
+            (0..d * dh)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let wk = store.push(
+            (0..d * dh)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let wv = store.push(
+            (0..d * dh)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let wo = store.push(
+            (0..dh * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let bq = store.push(
+            (0..m * dh)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let bk = store.push(
+            (0..m * dh)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let bv = store.push(
+            (0..m * dh)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let bo = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
         let q = store.push(vec![]);
         let k = store.push(vec![]);
         let v = store.push(vec![]);
@@ -2062,52 +2629,194 @@ pub fn build_gpt2_layer(
         let attn = store.push(vec![]);
         let out_h = store.push(vec![]);
         let out_h_rem = store.push(vec![]);
-        ops.push(Op::Projection { x: h, w: wq, bias: bq, out: q, rem: qr, m, k: d, n: dh, shift });
-        ops.push(Op::Projection { x: h, w: wk, bias: bk, out: k, rem: kr, m, k: d, n: dh, shift });
-        ops.push(Op::Projection { x: h, w: wv, bias: bv, out: v, rem: vr, m, k: d, n: dh, shift });
-        ops.push(Op::Transpose { x: k, out: kt, m, k: dh });
-        ops.push(Op::MatMul { a: q, b: kt, c: scores, m, k: dh, n: m });
-        ops.push(Op::SoftmaxIndex { x: scores, out: idx, table_len: 1 << 8 });
-        ops.push(Op::Softmax { idx, e, out: probs, table: exp_table, m, n: m });
-        ops.push(Op::MatMul { a: probs, b: v, c: attn, m, k: m, n: dh });
-        ops.push(Op::Projection { x: attn, w: wo, bias: bo, out: out_h, rem: out_h_rem, m, k: dh, n: d, shift });
+        ops.push(Op::Projection {
+            x: h,
+            w: wq,
+            bias: bq,
+            out: q,
+            rem: qr,
+            m,
+            k: d,
+            n: dh,
+            shift,
+        });
+        ops.push(Op::Projection {
+            x: h,
+            w: wk,
+            bias: bk,
+            out: k,
+            rem: kr,
+            m,
+            k: d,
+            n: dh,
+            shift,
+        });
+        ops.push(Op::Projection {
+            x: h,
+            w: wv,
+            bias: bv,
+            out: v,
+            rem: vr,
+            m,
+            k: d,
+            n: dh,
+            shift,
+        });
+        ops.push(Op::Transpose {
+            x: k,
+            out: kt,
+            m,
+            k: dh,
+        });
+        ops.push(Op::MatMul {
+            a: q,
+            b: kt,
+            c: scores,
+            m,
+            k: dh,
+            n: m,
+        });
+        ops.push(Op::SoftmaxIndex {
+            x: scores,
+            out: idx,
+            table_len: 1 << 8,
+        });
+        ops.push(Op::Softmax {
+            idx,
+            e,
+            out: probs,
+            table: exp_table,
+            m,
+            n: m,
+        });
+        ops.push(Op::MatMul {
+            a: probs,
+            b: v,
+            c: attn,
+            m,
+            k: m,
+            n: dh,
+        });
+        ops.push(Op::Projection {
+            x: attn,
+            w: wo,
+            bias: bo,
+            out: out_h,
+            rem: out_h_rem,
+            m,
+            k: dh,
+            n: d,
+            shift,
+        });
         head_outs.push(out_h);
     }
     let mut attn_acc = head_outs[0];
     for &ho in &head_outs[1..] {
         let sum = store.push(vec![]);
-        ops.push(Op::Add { a: attn_acc, b: ho, c: sum });
+        ops.push(Op::Add {
+            a: attn_acc,
+            b: ho,
+            c: sum,
+        });
         attn_acc = sum;
     }
     // residual
     let x2 = store.push(vec![]);
-    ops.push(Op::Add { a: x, b: attn_acc, c: x2 });
+    ops.push(Op::Add {
+        a: x,
+        b: attn_acc,
+        c: x2,
+    });
 
     // pre-norm for FFN
-    let ln2_w = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 5) as i64 + 1)).collect());
-    let ln2_b = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
+    let ln2_w = store.push(
+        (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 5) as i64 + 1))
+            .collect(),
+    );
+    let ln2_b = store.push(
+        (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+            .collect(),
+    );
     let h2 = store.push(vec![]);
-    ops.push(Op::Layernorm { x: x2, w: ln2_w, b: ln2_b, out: h2, rsqrt_table, m, d });
+    ops.push(Op::Layernorm {
+        x: x2,
+        w: ln2_w,
+        b: ln2_b,
+        out: h2,
+        rsqrt_table,
+        m,
+        d,
+    });
 
     // FFN
-    let fc_w = store.push((0..d * ffn).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-    let fc_b = store.push((0..m * ffn).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-    let proj_w = store.push((0..ffn * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-    let proj_b = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
+    let fc_w = store.push(
+        (0..d * ffn)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect(),
+    );
+    let fc_b = store.push(
+        (0..m * ffn)
+            .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+            .collect(),
+    );
+    let proj_w = store.push(
+        (0..ffn * d)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect(),
+    );
+    let proj_b = store.push(
+        (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+            .collect(),
+    );
     let fc = store.push(vec![]);
     let fc_rem = store.push(vec![]);
     let gelu_idx = store.push_idx(vec![]);
     let act = store.push(vec![]);
     let proj2 = store.push(vec![]);
     let proj2_rem = store.push(vec![]);
-    ops.push(Op::Projection { x: h2, w: fc_w, bias: fc_b, out: fc, rem: fc_rem, m, k: d, n: ffn, shift });
-    ops.push(Op::SoftmaxIndex { x: fc, out: gelu_idx, table_len: 64 });
-    ops.push(Op::Lookup { idx: gelu_idx, out: act, table: gelu_table });
-    ops.push(Op::Projection { x: act, w: proj_w, bias: proj_b, out: proj2, rem: proj2_rem, m, k: ffn, n: d, shift });
+    ops.push(Op::Projection {
+        x: h2,
+        w: fc_w,
+        bias: fc_b,
+        out: fc,
+        rem: fc_rem,
+        m,
+        k: d,
+        n: ffn,
+        shift,
+    });
+    ops.push(Op::SoftmaxIndex {
+        x: fc,
+        out: gelu_idx,
+        table_len: 64,
+    });
+    ops.push(Op::Lookup {
+        idx: gelu_idx,
+        out: act,
+        table: gelu_table,
+    });
+    ops.push(Op::Projection {
+        x: act,
+        w: proj_w,
+        bias: proj_b,
+        out: proj2,
+        rem: proj2_rem,
+        m,
+        k: ffn,
+        n: d,
+        shift,
+    });
 
     // residual
     let out = store.push(vec![]);
-    ops.push(Op::Add { a: x2, b: proj2, c: out });
+    ops.push(Op::Add {
+        a: x2,
+        b: proj2,
+        c: out,
+    });
     (ops, out)
 }
 
@@ -2117,8 +2826,12 @@ mod tests {
     use zkie_core::common::field::PrimeCharacteristicRing;
 
     fn step(m: usize, k: usize, n: usize, shift: u32, rng: &mut XorShift64) -> ProjectionStep {
-        let w: Vec<Goldilocks> = (0..k * n).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect();
-        let bias: Vec<Goldilocks> = (0..m * n).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect();
+        let w: Vec<Goldilocks> = (0..k * n)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect();
+        let bias: Vec<Goldilocks> = (0..m * n)
+            .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+            .collect();
         ProjectionStep::new(m, k, n, shift, w, bias)
     }
 
@@ -2126,7 +2839,9 @@ mod tests {
     fn single_projection_is_op_granularity() {
         let mut rng = XorShift64::new(0x0A0A);
         let (m, k, n, shift) = (4usize, 8usize, 8usize, 8u32);
-        let x: Vec<Goldilocks> = (0..m * k).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect();
+        let x: Vec<Goldilocks> = (0..m * k)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect();
         let steps = vec![step(m, k, n, shift, &mut rng)];
         let proof = prove_projection_chain(&x, &steps, &mut rng);
         assert!(proof.binds.is_empty(), "no internal binding for one op");
@@ -2137,7 +2852,9 @@ mod tests {
     fn chain_folds_n_projections_into_one_g() {
         let mut rng = XorShift64::new(0x0B0B);
         let (m, d, shift) = (4usize, 8usize, 8u32);
-        let x: Vec<Goldilocks> = (0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect();
+        let x: Vec<Goldilocks> = (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect();
         let steps = vec![
             step(m, d, d, shift, &mut rng),
             step(m, d, d, shift, &mut rng),
@@ -2160,7 +2877,9 @@ mod tests {
     fn projection_sharded_granularity() {
         let mut rng = XorShift64::new(0x1111);
         let (m, d, shift) = (4usize, 8usize, 8u32);
-        let x: Vec<Goldilocks> = (0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect();
+        let x: Vec<Goldilocks> = (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect();
         let steps: Vec<ProjectionStep> = (0..8).map(|_| step(m, d, d, shift, &mut rng)).collect();
 
         let ops_per_shard = 2;
@@ -2172,7 +2891,12 @@ mod tests {
         // A single altered weight in the middle breaks the affected shard.
         let mut bad_steps = steps.clone();
         bad_steps[3].w[0] = bad_steps[3].w[0] + Goldilocks::ONE;
-        assert!(!verify_projection_sharded(&proof, &x, &bad_steps, ops_per_shard));
+        assert!(!verify_projection_sharded(
+            &proof,
+            &x,
+            &bad_steps,
+            ops_per_shard
+        ));
 
         // Whole-model granularity = one shard, no cross-bindings.
         let whole = prove_projection_sharded(&x, &steps, steps.len(), &mut rng);
@@ -2185,7 +2909,9 @@ mod tests {
     fn residual_chain_roundtrip() {
         let mut rng = XorShift64::new(0x0D0D);
         let (m, d, shift) = (4usize, 8usize, 8u32);
-        let x: Vec<Goldilocks> = (0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect();
+        let x: Vec<Goldilocks> = (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect();
         let steps = vec![
             step(m, d, d, shift, &mut rng),
             step(m, d, d, shift, &mut rng),
@@ -2207,12 +2933,36 @@ mod tests {
         let mut rng = XorShift64::new(0x0E0E);
         let (m, d, ffn, shift) = (4usize, 8usize, 16usize, 8u32);
         let mut store = Store::new();
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let fc_w = store.push((0..d * ffn).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let fc_b = store.push((0..m * ffn).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let proj_w = store.push((0..ffn * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let proj_b = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let gelu_table = store.push((0..64).map(|j| from_i64((j as i64).pow(2) % 1000)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let fc_w = store.push(
+            (0..d * ffn)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let fc_b = store.push(
+            (0..m * ffn)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let proj_w = store.push(
+            (0..ffn * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let proj_b = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let gelu_table = store.push(
+            (0..64)
+                .map(|j| from_i64((j as i64).pow(2) % 1000))
+                .collect(),
+        );
         // Reserve output/witness slots (values overwritten by forward_ops).
         let fc = store.push(vec![]);
         let fc_rem = store.push(vec![]);
@@ -2226,17 +2976,47 @@ mod tests {
         // The gelu index is derived from fc in the forward (same simplification as
         // ffn_chain: index = fc % 64, wired via the idx tensor).
         let ops = vec![
-            Op::Projection { x, w: fc_w, bias: fc_b, out: fc, rem: fc_rem, m, k: d, n: ffn, shift },
-            Op::Lookup { idx: act_idx, out: act, table: gelu_table },
-            Op::Projection { x: act, w: proj_w, bias: proj_b, out: proj2, rem: proj2_rem, m, k: ffn, n: d, shift },
-            Op::Add { a: x, b: proj2, c: out },
+            Op::Projection {
+                x,
+                w: fc_w,
+                bias: fc_b,
+                out: fc,
+                rem: fc_rem,
+                m,
+                k: d,
+                n: ffn,
+                shift,
+            },
+            Op::Lookup {
+                idx: act_idx,
+                out: act,
+                table: gelu_table,
+            },
+            Op::Projection {
+                x: act,
+                w: proj_w,
+                bias: proj_b,
+                out: proj2,
+                rem: proj2_rem,
+                m,
+                k: ffn,
+                n: d,
+                shift,
+            },
+            Op::Add {
+                a: x,
+                b: proj2,
+                c: out,
+            },
         ];
 
         // Fill the gelu idx tensor (derived from fc) before proving.
         let fc_val = {
             let h = crate::par::mm_par(store.get(x), store.get(fc_w), m, d, ffn, 64);
             (0..m * ffn)
-                .map(|ij| from_i64(round_div(to_i64(h[ij]), 1i64 << shift) + to_i64(store.get(fc_b)[ij])))
+                .map(|ij| {
+                    from_i64(round_div(to_i64(h[ij]), 1i64 << shift) + to_i64(store.get(fc_b)[ij]))
+                })
                 .collect::<Vec<_>>()
         };
         let idx: Vec<u32> = fc_val
@@ -2250,7 +3030,10 @@ mod tests {
         assert!(verify_shard(&store, &ops, &proof));
 
         // Tamper with an intermediate weight -> must fail.
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(fc_w)[0] = bad.get_mut(fc_w)[0] + Goldilocks::ONE;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2261,15 +3044,33 @@ mod tests {
         let (m, n) = (4usize, 8usize);
         let table_len = 1usize << 8;
         let mut store = Store::new();
-        let table = store.push((0..table_len).map(|j| from_i64((j % 255 + 1) as i64)).collect());
-        let idx = store.push_idx((0..m * n).map(|_| (rng.next_u64() % table_len as u64) as u32).collect());
+        let table = store.push(
+            (0..table_len)
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
+        let idx = store.push_idx(
+            (0..m * n)
+                .map(|_| (rng.next_u64() % table_len as u64) as u32)
+                .collect(),
+        );
         let e = store.push(vec![]);
         let out = store.push(vec![]);
-        let ops = vec![Op::Softmax { idx, e, out, table, m, n }];
+        let ops = vec![Op::Softmax {
+            idx,
+            e,
+            out,
+            table,
+            m,
+            n,
+        }];
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
         assert!(verify_shard(&store, &ops, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.idx[idx][0] ^= 1;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2279,16 +3080,43 @@ mod tests {
         let mut rng = XorShift64::new(0x1010);
         let (m, d) = (4usize, 8usize);
         let mut store = Store::new();
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64)).collect());
-        let w = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 5) as i64 + 1)).collect());
-        let b = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let rsqrt_table = store.push((0..(1usize << 8)).map(|j| from_i64((j % 255 + 1) as i64)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64))
+                .collect(),
+        );
+        let w = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 5) as i64 + 1))
+                .collect(),
+        );
+        let b = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let rsqrt_table = store.push(
+            (0..(1usize << 8))
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
         let out = store.push(vec![]);
-        let ops = vec![Op::Layernorm { x, w, b, out, rsqrt_table, m, d }];
+        let ops = vec![Op::Layernorm {
+            x,
+            w,
+            b,
+            out,
+            rsqrt_table,
+            m,
+            d,
+        }];
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
         assert!(verify_shard(&store, &ops, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(x)[0] = bad.get_mut(x)[0] + Goldilocks::ONE;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2298,12 +3126,28 @@ mod tests {
         let mut rng = XorShift64::new(0x1212);
         let (m, d, shift) = (4usize, 8usize, 8u32);
         let mut store = Store::new();
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
         let mut weights = Vec::new();
         let mut biases = Vec::new();
         for _ in 0..4 {
-            weights.push(store.push((0..d * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect()));
-            biases.push(store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect()));
+            weights.push(
+                store.push(
+                    (0..d * d)
+                        .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                        .collect(),
+                ),
+            );
+            biases.push(
+                store.push(
+                    (0..m * d)
+                        .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                        .collect(),
+                ),
+            );
         }
         let mut outs = Vec::new();
         let mut rems = Vec::new();
@@ -2312,26 +3156,73 @@ mod tests {
             rems.push(store.push(vec![]));
         }
         let ops = vec![
-            Op::Projection { x, w: weights[0], bias: biases[0], out: outs[0], rem: rems[0], m, k: d, n: d, shift },
-            Op::Projection { x: outs[0], w: weights[1], bias: biases[1], out: outs[1], rem: rems[1], m, k: d, n: d, shift },
-            Op::Projection { x: outs[1], w: weights[2], bias: biases[2], out: outs[2], rem: rems[2], m, k: d, n: d, shift },
-            Op::Projection { x: outs[2], w: weights[3], bias: biases[3], out: outs[3], rem: rems[3], m, k: d, n: d, shift },
+            Op::Projection {
+                x,
+                w: weights[0],
+                bias: biases[0],
+                out: outs[0],
+                rem: rems[0],
+                m,
+                k: d,
+                n: d,
+                shift,
+            },
+            Op::Projection {
+                x: outs[0],
+                w: weights[1],
+                bias: biases[1],
+                out: outs[1],
+                rem: rems[1],
+                m,
+                k: d,
+                n: d,
+                shift,
+            },
+            Op::Projection {
+                x: outs[1],
+                w: weights[2],
+                bias: biases[2],
+                out: outs[2],
+                rem: rems[2],
+                m,
+                k: d,
+                n: d,
+                shift,
+            },
+            Op::Projection {
+                x: outs[2],
+                w: weights[3],
+                bias: biases[3],
+                out: outs[3],
+                rem: rems[3],
+                m,
+                k: d,
+                n: d,
+                shift,
+            },
         ];
 
         let proof = prove_shard_dag(&mut store, &ops, 2, &mut rng);
         assert_eq!(proof.shards.len(), 2);
-        assert_eq!(proof.cross_tensors.len(), 1, "only y2 spans the shard boundary");
+        assert_eq!(
+            proof.cross_tensors.len(),
+            1,
+            "only y2 spans the shard boundary"
+        );
         assert!(verify_shard_dag(&mut store, &ops, 2, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(weights[1])[0] = bad.get_mut(weights[1])[0] + Goldilocks::ONE;
         assert!(!verify_shard_dag(&mut bad, &ops, 2, &proof));
     }
 
     #[test]
     fn committed_cross_bind_roundtrip() {
-        use zkie_core::pcs::committed::commit;
         use zkie_core::common::field::PrimeCharacteristicRing;
+        use zkie_core::pcs::committed::commit;
         use zkie_core::pcs::whir::Whir;
 
         let mut rng = XorShift64::new(0x1414);
@@ -2366,12 +3257,28 @@ mod tests {
         let mut rng = XorShift64::new(0x1515);
         let (m, d, shift) = (4usize, 8usize, 8u32);
         let mut store = Store::new();
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
         let mut ws = Vec::new();
         let mut bs = Vec::new();
         for _ in 0..4 {
-            ws.push(store.push((0..d * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect()));
-            bs.push(store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect()));
+            ws.push(
+                store.push(
+                    (0..d * d)
+                        .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                        .collect(),
+                ),
+            );
+            bs.push(
+                store.push(
+                    (0..m * d)
+                        .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                        .collect(),
+                ),
+            );
         }
         let mut outs = Vec::new();
         let mut rems = Vec::new();
@@ -2380,10 +3287,50 @@ mod tests {
             rems.push(store.push(vec![]));
         }
         let ops = vec![
-            Op::Projection { x, w: ws[0], bias: bs[0], out: outs[0], rem: rems[0], m, k: d, n: d, shift },
-            Op::Projection { x: outs[0], w: ws[1], bias: bs[1], out: outs[1], rem: rems[1], m, k: d, n: d, shift },
-            Op::Projection { x: outs[1], w: ws[2], bias: bs[2], out: outs[2], rem: rems[2], m, k: d, n: d, shift },
-            Op::Projection { x: outs[2], w: ws[3], bias: bs[3], out: outs[3], rem: rems[3], m, k: d, n: d, shift },
+            Op::Projection {
+                x,
+                w: ws[0],
+                bias: bs[0],
+                out: outs[0],
+                rem: rems[0],
+                m,
+                k: d,
+                n: d,
+                shift,
+            },
+            Op::Projection {
+                x: outs[0],
+                w: ws[1],
+                bias: bs[1],
+                out: outs[1],
+                rem: rems[1],
+                m,
+                k: d,
+                n: d,
+                shift,
+            },
+            Op::Projection {
+                x: outs[1],
+                w: ws[2],
+                bias: bs[2],
+                out: outs[2],
+                rem: rems[2],
+                m,
+                k: d,
+                n: d,
+                shift,
+            },
+            Op::Projection {
+                x: outs[2],
+                w: ws[3],
+                bias: bs[3],
+                out: outs[3],
+                rem: rems[3],
+                m,
+                k: d,
+                n: d,
+                shift,
+            },
         ];
 
         let whir = Whir::new_testing(5); // m*d = 32 = 2^5
@@ -2393,7 +3340,10 @@ mod tests {
         assert_eq!(proof.cross_binds.len(), 1);
         assert!(verify_committed_shard_dag(&store, &ops, 2, &whir, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(ws[1])[0] = bad.get_mut(ws[1])[0] + Goldilocks::ONE;
         assert!(!verify_committed_shard_dag(&bad, &ops, 2, &whir, &proof));
     }
@@ -2405,7 +3355,9 @@ mod tests {
 
         let mut rng = XorShift64::new(0x1616);
         let n = 1usize << 6;
-        let weights: Vec<Vec<Goldilocks>> = (0..4).map(|_| (0..n).map(|_| rng.field()).collect()).collect();
+        let weights: Vec<Vec<Goldilocks>> = (0..4)
+            .map(|_| (0..n).map(|_| rng.field()).collect())
+            .collect();
         let refs: Vec<&[Goldilocks]> = weights.iter().map(|w| w.as_slice()).collect();
 
         let whir = Whir::new_testing(6);
@@ -2430,9 +3382,15 @@ mod tests {
 
         let mut rng = XorShift64::new(0x1717);
         let (m, d, shift) = (4usize, 8usize, 8u32);
-        let x: Vec<Goldilocks> = (0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect();
-        let w: Vec<Goldilocks> = (0..d * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect();
-        let bias: Vec<Goldilocks> = (0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect();
+        let x: Vec<Goldilocks> = (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect();
+        let w: Vec<Goldilocks> = (0..d * d)
+            .map(|_| from_i64((rng.next_u64() % 50) as i64))
+            .collect();
+        let bias: Vec<Goldilocks> = (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+            .collect();
         let step = ProjectionStep::new(m, d, d, shift, w.clone(), bias.clone());
         let (out, rem) = projection_fwd(&x, &step);
 
@@ -2443,17 +3401,56 @@ mod tests {
         let bias_batch = commit_weights_batch(&whir_b, &[&bias]);
 
         let proof = prove_projection_committed(
-            &x, &w_batch, 0, &bias_batch, 0, &w, &bias, &out, &rem, m, d, d, shift, &mut rng,
+            &x,
+            &w_batch,
+            0,
+            &bias_batch,
+            0,
+            &w,
+            &bias,
+            &out,
+            &rem,
+            m,
+            d,
+            d,
+            shift,
+            &mut rng,
         );
         assert!(verify_projection_committed(
-            &proof, &x, &w_batch, 0, &bias_batch, 0, &w, &bias, &out, &rem, m, d, d, shift,
+            &proof,
+            &x,
+            &w_batch,
+            0,
+            &bias_batch,
+            0,
+            &w,
+            &bias,
+            &out,
+            &rem,
+            m,
+            d,
+            d,
+            shift,
         ));
 
         // Wrong weight at the committed index must fail.
         let mut bad_w = w.clone();
         bad_w[0] = bad_w[0] + Goldilocks::ONE;
         assert!(!verify_projection_committed(
-            &proof, &x, &w_batch, 0, &bias_batch, 0, &bad_w, &bias, &out, &rem, m, d, d, shift,
+            &proof,
+            &x,
+            &w_batch,
+            0,
+            &bias_batch,
+            0,
+            &bad_w,
+            &bias,
+            &out,
+            &rem,
+            m,
+            d,
+            d,
+            shift,
         ));
     }
 
@@ -2462,14 +3459,25 @@ mod tests {
         let mut rng = XorShift64::new(0x1818);
         let (m, k, n) = (4usize, 8usize, 8usize);
         let mut store = Store::new();
-        let a = store.push((0..m * k).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let b = store.push((0..k * n).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
+        let a = store.push(
+            (0..m * k)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let b = store.push(
+            (0..k * n)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
         let c = store.push(vec![]);
         let ops = vec![Op::MatMul { a, b, c, m, k, n }];
         let proof = prove_shard(&mut store, &ops, &[c], &mut rng);
         assert!(verify_shard(&store, &ops, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(a)[0] = bad.get_mut(a)[0] + Goldilocks::ONE;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2480,18 +3488,41 @@ mod tests {
         let mut rng = XorShift64::new(0x1919);
         let (m, kd) = (4usize, 8usize);
         let mut store = Store::new();
-        let q_t = store.push((0..m * kd).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let k_t = store.push((0..m * kd).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
+        let q_t = store.push(
+            (0..m * kd)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let k_t = store.push(
+            (0..m * kd)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
         let kt_t = store.push(vec![]);
         let scores_t = store.push(vec![]);
         let ops = vec![
-            Op::Transpose { x: k_t, out: kt_t, m, k: kd },
-            Op::MatMul { a: q_t, b: kt_t, c: scores_t, m, k: kd, n: m },
+            Op::Transpose {
+                x: k_t,
+                out: kt_t,
+                m,
+                k: kd,
+            },
+            Op::MatMul {
+                a: q_t,
+                b: kt_t,
+                c: scores_t,
+                m,
+                k: kd,
+                n: m,
+            },
         ];
         let proof = prove_shard(&mut store, &ops, &[scores_t], &mut rng);
         assert!(verify_shard(&store, &ops, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(q_t)[0] = bad.get_mut(q_t)[0] + Goldilocks::ONE;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2506,13 +3537,33 @@ mod tests {
         let table_len = 1usize << 8;
         let mut store = Store::new();
 
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let exp_table = store.push((0..table_len).map(|j| from_i64((j % 255 + 1) as i64)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let exp_table = store.push(
+            (0..table_len)
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
         let mut ws = Vec::new();
         let mut bs = Vec::new();
         for _ in 0..3 {
-            ws.push(store.push((0..d * dh).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect()));
-            bs.push(store.push((0..m * dh).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect()));
+            ws.push(
+                store.push(
+                    (0..d * dh)
+                        .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                        .collect(),
+                ),
+            );
+            bs.push(
+                store.push(
+                    (0..m * dh)
+                        .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                        .collect(),
+                ),
+            );
         }
         let mut outs = Vec::new();
         let mut rems = Vec::new();
@@ -2528,20 +3579,83 @@ mod tests {
         let attn = store.push(vec![]);
 
         let ops = vec![
-            Op::Projection { x, w: ws[0], bias: bs[0], out: outs[0], rem: rems[0], m, k: d, n: dh, shift },
-            Op::Projection { x, w: ws[1], bias: bs[1], out: outs[1], rem: rems[1], m, k: d, n: dh, shift },
-            Op::Projection { x, w: ws[2], bias: bs[2], out: outs[2], rem: rems[2], m, k: d, n: dh, shift },
-            Op::Transpose { x: outs[1], out: kt, m, k: dh },
-            Op::MatMul { a: outs[0], b: kt, c: scores, m, k: dh, n: m },
-            Op::SoftmaxIndex { x: scores, out: idx, table_len },
-            Op::Softmax { idx, e, out: probs, table: exp_table, m, n: m },
-            Op::MatMul { a: probs, b: outs[2], c: attn, m, k: m, n: dh },
+            Op::Projection {
+                x,
+                w: ws[0],
+                bias: bs[0],
+                out: outs[0],
+                rem: rems[0],
+                m,
+                k: d,
+                n: dh,
+                shift,
+            },
+            Op::Projection {
+                x,
+                w: ws[1],
+                bias: bs[1],
+                out: outs[1],
+                rem: rems[1],
+                m,
+                k: d,
+                n: dh,
+                shift,
+            },
+            Op::Projection {
+                x,
+                w: ws[2],
+                bias: bs[2],
+                out: outs[2],
+                rem: rems[2],
+                m,
+                k: d,
+                n: dh,
+                shift,
+            },
+            Op::Transpose {
+                x: outs[1],
+                out: kt,
+                m,
+                k: dh,
+            },
+            Op::MatMul {
+                a: outs[0],
+                b: kt,
+                c: scores,
+                m,
+                k: dh,
+                n: m,
+            },
+            Op::SoftmaxIndex {
+                x: scores,
+                out: idx,
+                table_len,
+            },
+            Op::Softmax {
+                idx,
+                e,
+                out: probs,
+                table: exp_table,
+                m,
+                n: m,
+            },
+            Op::MatMul {
+                a: probs,
+                b: outs[2],
+                c: attn,
+                m,
+                k: m,
+                n: dh,
+            },
         ];
 
         let proof = prove_shard(&mut store, &ops, &[attn], &mut rng);
         assert!(verify_shard(&store, &ops, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(ws[0])[0] = bad.get_mut(ws[0])[0] + Goldilocks::ONE;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2556,20 +3670,60 @@ mod tests {
         let dh = d / heads;
         let table_len = 1usize << 8;
         let mut store = Store::new();
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let exp_table = store.push((0..table_len).map(|j| from_i64((j % 255 + 1) as i64)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let exp_table = store.push(
+            (0..table_len)
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
 
         let mut ops = Vec::new();
         let mut head_outs = Vec::new();
         for _h in 0..heads {
-            let wq = store.push((0..d * dh).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-            let wk = store.push((0..d * dh).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-            let wv = store.push((0..d * dh).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-            let wo = store.push((0..dh * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-            let bq = store.push((0..m * dh).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-            let bk = store.push((0..m * dh).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-            let bv = store.push((0..m * dh).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-            let bo = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
+            let wq = store.push(
+                (0..d * dh)
+                    .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                    .collect(),
+            );
+            let wk = store.push(
+                (0..d * dh)
+                    .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                    .collect(),
+            );
+            let wv = store.push(
+                (0..d * dh)
+                    .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                    .collect(),
+            );
+            let wo = store.push(
+                (0..dh * d)
+                    .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                    .collect(),
+            );
+            let bq = store.push(
+                (0..m * dh)
+                    .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                    .collect(),
+            );
+            let bk = store.push(
+                (0..m * dh)
+                    .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                    .collect(),
+            );
+            let bv = store.push(
+                (0..m * dh)
+                    .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                    .collect(),
+            );
+            let bo = store.push(
+                (0..m * d)
+                    .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                    .collect(),
+            );
             let q = store.push(vec![]);
             let k = store.push(vec![]);
             let v = store.push(vec![]);
@@ -2585,29 +3739,106 @@ mod tests {
             let out_h = store.push(vec![]);
             let out_h_rem = store.push(vec![]);
 
-            ops.push(Op::Projection { x, w: wq, bias: bq, out: q, rem: qr, m, k: d, n: dh, shift });
-            ops.push(Op::Projection { x, w: wk, bias: bk, out: k, rem: kr, m, k: d, n: dh, shift });
-            ops.push(Op::Projection { x, w: wv, bias: bv, out: v, rem: vr, m, k: d, n: dh, shift });
-            ops.push(Op::Transpose { x: k, out: kt, m, k: dh });
-            ops.push(Op::MatMul { a: q, b: kt, c: scores, m, k: dh, n: m });
-            ops.push(Op::SoftmaxIndex { x: scores, out: idx, table_len });
-            ops.push(Op::Softmax { idx, e, out: probs, table: exp_table, m, n: m });
-            ops.push(Op::MatMul { a: probs, b: v, c: attn, m, k: m, n: dh });
-            ops.push(Op::Projection { x: attn, w: wo, bias: bo, out: out_h, rem: out_h_rem, m, k: dh, n: d, shift });
+            ops.push(Op::Projection {
+                x,
+                w: wq,
+                bias: bq,
+                out: q,
+                rem: qr,
+                m,
+                k: d,
+                n: dh,
+                shift,
+            });
+            ops.push(Op::Projection {
+                x,
+                w: wk,
+                bias: bk,
+                out: k,
+                rem: kr,
+                m,
+                k: d,
+                n: dh,
+                shift,
+            });
+            ops.push(Op::Projection {
+                x,
+                w: wv,
+                bias: bv,
+                out: v,
+                rem: vr,
+                m,
+                k: d,
+                n: dh,
+                shift,
+            });
+            ops.push(Op::Transpose {
+                x: k,
+                out: kt,
+                m,
+                k: dh,
+            });
+            ops.push(Op::MatMul {
+                a: q,
+                b: kt,
+                c: scores,
+                m,
+                k: dh,
+                n: m,
+            });
+            ops.push(Op::SoftmaxIndex {
+                x: scores,
+                out: idx,
+                table_len,
+            });
+            ops.push(Op::Softmax {
+                idx,
+                e,
+                out: probs,
+                table: exp_table,
+                m,
+                n: m,
+            });
+            ops.push(Op::MatMul {
+                a: probs,
+                b: v,
+                c: attn,
+                m,
+                k: m,
+                n: dh,
+            });
+            ops.push(Op::Projection {
+                x: attn,
+                w: wo,
+                bias: bo,
+                out: out_h,
+                rem: out_h_rem,
+                m,
+                k: dh,
+                n: d,
+                shift,
+            });
             head_outs.push(out_h);
         }
 
         let mut acc = head_outs[0];
         for &h in &head_outs[1..] {
             let sum = store.push(vec![]);
-            ops.push(Op::Add { a: acc, b: h, c: sum });
+            ops.push(Op::Add {
+                a: acc,
+                b: h,
+                c: sum,
+            });
             acc = sum;
         }
 
         let proof = prove_shard(&mut store, &ops, &[acc], &mut rng);
         assert!(verify_shard(&store, &ops, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(x)[0] = bad.get_mut(x)[0] + Goldilocks::ONE;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2620,15 +3851,51 @@ mod tests {
         let mut rng = XorShift64::new(0x1C1C);
         let (m, d, ffn, shift) = (4usize, 8usize, 16usize, 8u32);
         let mut store = Store::new();
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let ln_w = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 5) as i64 + 1)).collect());
-        let ln_b = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let rsqrt_table = store.push((0..(1usize << 8)).map(|j| from_i64((j % 255 + 1) as i64)).collect());
-        let fc_w = store.push((0..d * ffn).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let fc_b = store.push((0..m * ffn).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let proj_w = store.push((0..ffn * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let proj_b = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect());
-        let gelu_table = store.push((0..64).map(|j| from_i64((j as i64).pow(2) % 1000)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let ln_w = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 5) as i64 + 1))
+                .collect(),
+        );
+        let ln_b = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let rsqrt_table = store.push(
+            (0..(1usize << 8))
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
+        let fc_w = store.push(
+            (0..d * ffn)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let fc_b = store.push(
+            (0..m * ffn)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let proj_w = store.push(
+            (0..ffn * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let proj_b = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+                .collect(),
+        );
+        let gelu_table = store.push(
+            (0..64)
+                .map(|j| from_i64((j as i64).pow(2) % 1000))
+                .collect(),
+        );
 
         let h = store.push(vec![]);
         let fc = store.push(vec![]);
@@ -2640,18 +3907,61 @@ mod tests {
         let out = store.push(vec![]);
 
         let ops = vec![
-            Op::Layernorm { x, w: ln_w, b: ln_b, out: h, rsqrt_table, m, d },
-            Op::Projection { x: h, w: fc_w, bias: fc_b, out: fc, rem: fc_rem, m, k: d, n: ffn, shift },
-            Op::SoftmaxIndex { x: fc, out: gelu_idx, table_len: 64 },
-            Op::Lookup { idx: gelu_idx, out: act, table: gelu_table },
-            Op::Projection { x: act, w: proj_w, bias: proj_b, out: proj2, rem: proj2_rem, m, k: ffn, n: d, shift },
-            Op::Add { a: x, b: proj2, c: out },
+            Op::Layernorm {
+                x,
+                w: ln_w,
+                b: ln_b,
+                out: h,
+                rsqrt_table,
+                m,
+                d,
+            },
+            Op::Projection {
+                x: h,
+                w: fc_w,
+                bias: fc_b,
+                out: fc,
+                rem: fc_rem,
+                m,
+                k: d,
+                n: ffn,
+                shift,
+            },
+            Op::SoftmaxIndex {
+                x: fc,
+                out: gelu_idx,
+                table_len: 64,
+            },
+            Op::Lookup {
+                idx: gelu_idx,
+                out: act,
+                table: gelu_table,
+            },
+            Op::Projection {
+                x: act,
+                w: proj_w,
+                bias: proj_b,
+                out: proj2,
+                rem: proj2_rem,
+                m,
+                k: ffn,
+                n: d,
+                shift,
+            },
+            Op::Add {
+                a: x,
+                b: proj2,
+                c: out,
+            },
         ];
 
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
         assert!(verify_shard(&store, &ops, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(ln_w)[0] = bad.get_mut(ln_w)[0] + Goldilocks::ONE;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2663,18 +3973,47 @@ mod tests {
         let (m, d, ffn, heads, shift) = (4usize, 8usize, 16usize, 2usize, 8u32);
         let table_len = 1usize << 8;
         let mut store = Store::new();
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let exp_table = store.push((0..table_len).map(|j| from_i64((j % 255 + 1) as i64)).collect());
-        let gelu_table = store.push((0..64).map(|j| from_i64((j as i64).pow(2) % 1000)).collect());
-        let rsqrt_table = store.push((0..table_len).map(|j| from_i64((j % 255 + 1) as i64)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let exp_table = store.push(
+            (0..table_len)
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
+        let gelu_table = store.push(
+            (0..64)
+                .map(|j| from_i64((j as i64).pow(2) % 1000))
+                .collect(),
+        );
+        let rsqrt_table = store.push(
+            (0..table_len)
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
 
         let (ops, out) = build_gpt2_layer(
-            &mut store, x, heads, m, d, ffn, shift, exp_table, gelu_table, rsqrt_table, &mut rng,
+            &mut store,
+            x,
+            heads,
+            m,
+            d,
+            ffn,
+            shift,
+            exp_table,
+            gelu_table,
+            rsqrt_table,
+            &mut rng,
         );
         let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
         assert!(verify_shard(&store, &ops, &proof));
 
-        let mut bad = Store { v: store.v.clone(), idx: store.idx.clone() };
+        let mut bad = Store {
+            v: store.v.clone(),
+            idx: store.idx.clone(),
+        };
         bad.get_mut(x)[0] = bad.get_mut(x)[0] + Goldilocks::ONE;
         assert!(!verify_shard(&bad, &ops, &proof));
     }
@@ -2688,12 +4027,38 @@ mod tests {
         let (m, d, ffn, heads, shift) = (4usize, 8usize, 16usize, 2usize, 8u32);
         let table_len = 1usize << 8;
         let mut store = Store::new();
-        let x = store.push((0..m * d).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
-        let exp_table = store.push((0..table_len).map(|j| from_i64((j % 255 + 1) as i64)).collect());
-        let gelu_table = store.push((0..64).map(|j| from_i64((j as i64).pow(2) % 1000)).collect());
-        let rsqrt_table = store.push((0..table_len).map(|j| from_i64((j % 255 + 1) as i64)).collect());
+        let x = store.push(
+            (0..m * d)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let exp_table = store.push(
+            (0..table_len)
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
+        let gelu_table = store.push(
+            (0..64)
+                .map(|j| from_i64((j as i64).pow(2) % 1000))
+                .collect(),
+        );
+        let rsqrt_table = store.push(
+            (0..table_len)
+                .map(|j| from_i64((j % 255 + 1) as i64))
+                .collect(),
+        );
         let (ops, _out) = build_gpt2_layer(
-            &mut store, x, heads, m, d, ffn, shift, exp_table, gelu_table, rsqrt_table, &mut rng,
+            &mut store,
+            x,
+            heads,
+            m,
+            d,
+            ffn,
+            shift,
+            exp_table,
+            gelu_table,
+            rsqrt_table,
+            &mut rng,
         );
         (store, ops)
     }
@@ -2707,8 +4072,13 @@ mod tests {
     fn forward_shard_matches_full_forward_for_every_shard() {
         let (base, ops) = real_layer_graph();
         let clone_store = |s: &Store| {
-            let mut c = Store { v: Vec::with_capacity(s.v.len()), idx: s.idx.clone() };
-            for t in 0..s.v.len() { c.v.push(TensorData::Owned(s.get(t).to_vec())); }
+            let mut c = Store {
+                v: Vec::with_capacity(s.v.len()),
+                idx: s.idx.clone(),
+            };
+            for t in 0..s.v.len() {
+                c.v.push(TensorData::Owned(s.get(t).to_vec()));
+            }
             c
         };
         let mut full = clone_store(&base);
@@ -2724,7 +4094,8 @@ mod tests {
                     .collect();
                 for &t in &needed {
                     assert_eq!(
-                        part.get(t), full.get(t),
+                        part.get(t),
+                        full.get(t),
                         "shard {lo}..{hi}: tensor {t} differs from the full forward"
                     );
                 }
@@ -2738,8 +4109,13 @@ mod tests {
     #[test]
     fn forward_shard_actually_releases_what_the_shard_does_not_need() {
         let (base, ops) = real_layer_graph();
-        let mut part = Store { v: Vec::new(), idx: base.idx.clone() };
-        for t in 0..base.v.len() { part.v.push(TensorData::Owned(base.get(t).to_vec())); }
+        let mut part = Store {
+            v: Vec::new(),
+            idx: base.idx.clone(),
+        };
+        for t in 0..base.v.len() {
+            part.v.push(TensorData::Owned(base.get(t).to_vec()));
+        }
 
         // the LAST shard: everything before it should be releasable
         let lo = ops.len() - 1;
@@ -2753,7 +4129,11 @@ mod tests {
         let mut released = 0usize;
         let mut live = 0usize;
         for t in 0..part.v.len() {
-            if needed.contains(&t) { live += 1; } else if part.get(t).is_empty() { released += 1; }
+            if needed.contains(&t) {
+                live += 1;
+            } else if part.get(t).is_empty() {
+                released += 1;
+            }
         }
         assert!(
             released > 0,
@@ -2764,7 +4144,10 @@ mod tests {
             let produced_in_prefix = ops[..lo].iter().any(|o| o.writes().contains(&t));
             let preexisting = t < base.v.len() && !base.get(t).is_empty();
             if produced_in_prefix || preexisting {
-                assert!(!part.get(t).is_empty(), "released tensor {t} that the shard needs");
+                assert!(
+                    !part.get(t).is_empty(),
+                    "released tensor {t} that the shard needs"
+                );
             }
         }
         assert!(live > 0, "test is vacuous - the shard needs nothing");
@@ -2778,14 +4161,25 @@ mod tests {
     fn forward_shard_over_the_whole_graph_equals_a_full_forward() {
         let (base, ops) = real_layer_graph();
         let clone_store = |s: &Store| {
-            let mut c = Store { v: Vec::with_capacity(s.v.len()), idx: s.idx.clone() };
-            for t in 0..s.v.len() { c.v.push(TensorData::Owned(s.get(t).to_vec())); }
+            let mut c = Store {
+                v: Vec::with_capacity(s.v.len()),
+                idx: s.idx.clone(),
+            };
+            for t in 0..s.v.len() {
+                c.v.push(TensorData::Owned(s.get(t).to_vec()));
+            }
             c
         };
-        let mut a = clone_store(&base); forward_ops(&mut a, &ops);
-        let mut b = clone_store(&base); forward_shard(&mut b, &ops, 0..ops.len());
+        let mut a = clone_store(&base);
+        forward_ops(&mut a, &ops);
+        let mut b = clone_store(&base);
+        forward_shard(&mut b, &ops, 0..ops.len());
         for t in 0..a.v.len() {
-            assert_eq!(a.get(t), b.get(t), "tensor {t} differs: the baseline is not equivalent");
+            assert_eq!(
+                a.get(t),
+                b.get(t),
+                "tensor {t} differs: the baseline is not equivalent"
+            );
         }
     }
 
@@ -2799,8 +4193,13 @@ mod tests {
     fn forward_shard_holds_less_than_a_full_forward() {
         let (base, ops) = real_layer_graph();
         let clone_store = |s: &Store| {
-            let mut c = Store { v: Vec::with_capacity(s.v.len()), idx: s.idx.clone() };
-            for t in 0..s.v.len() { c.v.push(TensorData::Owned(s.get(t).to_vec())); }
+            let mut c = Store {
+                v: Vec::with_capacity(s.v.len()),
+                idx: s.idx.clone(),
+            };
+            for t in 0..s.v.len() {
+                c.v.push(TensorData::Owned(s.get(t).to_vec()));
+            }
             c
         };
         let live = |s: &Store| -> usize { (0..s.v.len()).map(|t| s.get(t).len()).sum() };
@@ -2894,7 +4293,10 @@ mod tests {
             "the set of ops with no proof of their own changed; see the succinct-verification thread before adjusting"
         );
         for p in &unproven {
-            assert!(!carries_its_own_proof(p), "classified as proven but has no payload");
+            assert!(
+                !carries_its_own_proof(p),
+                "classified as proven but has no payload"
+            );
         }
     }
 
@@ -2943,8 +4345,13 @@ mod tests {
     fn reads_does_not_under_declare() {
         let (base, ops) = real_layer_graph();
         let clone_store = |s: &Store| {
-            let mut c = Store { v: Vec::with_capacity(s.v.len()), idx: s.idx.clone() };
-            for t in 0..s.v.len() { c.v.push(TensorData::Owned(s.get(t).to_vec())); }
+            let mut c = Store {
+                v: Vec::with_capacity(s.v.len()),
+                idx: s.idx.clone(),
+            };
+            for t in 0..s.v.len() {
+                c.v.push(TensorData::Owned(s.get(t).to_vec()));
+            }
             c
         };
         for (i, op) in ops.iter().enumerate() {
@@ -2957,19 +4364,25 @@ mod tests {
 
             let mut want = clone_store(&pre);
             forward_ops(&mut want, std::slice::from_ref(op));
-            let want_out: Vec<Vec<Goldilocks>> = writes.iter().map(|&t| want.get(t).to_vec()).collect();
+            let want_out: Vec<Vec<Goldilocks>> =
+                writes.iter().map(|&t| want.get(t).to_vec()).collect();
 
             for cand in 0..pre.v.len() {
-                if reads.contains(&cand) || writes.contains(&cand) { continue; }
-                if pre.get(cand).is_empty() { continue; }
+                if reads.contains(&cand) || writes.contains(&cand) {
+                    continue;
+                }
+                if pre.get(cand).is_empty() {
+                    continue;
+                }
                 let mut s1 = clone_store(&pre);
                 let mut tampered = s1.get(cand).to_vec();
                 tampered[0] = tampered[0] + Goldilocks::ONE;
                 s1.v[cand] = TensorData::Owned(tampered);
-                forward_ops(&mut s1, std::slice::from_ref(op));   // ONLY op i
+                forward_ops(&mut s1, std::slice::from_ref(op)); // ONLY op i
                 for (j, &t) in writes.iter().enumerate() {
                     assert_eq!(
-                        s1.get(t), want_out[j].as_slice(),
+                        s1.get(t),
+                        want_out[j].as_slice(),
                         "op {i} ({op:?}) output {t} changed when tensor {cand} was perturbed, \
                          but reads() does not list it"
                     );
@@ -2993,10 +4406,16 @@ mod tests {
                 let read: std::collections::BTreeSet<T> =
                     ops[lo..hi].iter().flat_map(|o| o.reads()).collect();
                 // nothing the shard produces itself is an input
-                assert!(got.is_disjoint(&written), "{lo}..{hi}: an input is also produced here");
+                assert!(
+                    got.is_disjoint(&written),
+                    "{lo}..{hi}: an input is also produced here"
+                );
                 // every read it cannot satisfy IS an input
                 for t in read.difference(&written) {
-                    assert!(got.contains(t), "{lo}..{hi}: unmet read {t} missing from inputs");
+                    assert!(
+                        got.contains(t),
+                        "{lo}..{hi}: unmet read {t} missing from inputs"
+                    );
                 }
             }
         }
@@ -3005,7 +4424,10 @@ mod tests {
         let produced_anywhere: std::collections::BTreeSet<T> =
             ops.iter().flat_map(|o| o.writes()).collect();
         for t in &all {
-            assert!(!produced_anywhere.contains(t), "tensor {t} is both pre-existing and produced");
+            assert!(
+                !produced_anywhere.contains(t),
+                "tensor {t} is both pre-existing and produced"
+            );
         }
     }
 
