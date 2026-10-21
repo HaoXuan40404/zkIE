@@ -3,6 +3,7 @@
 //! the claim-merging primitive for reduction chaining (DeepProve iop/same_poly).
 use crate::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use crate::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SamePolyProof {
     pub coeffs: Vec<Goldilocks>,
     pub proof: VirtualProof,

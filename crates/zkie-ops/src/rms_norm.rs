@@ -22,6 +22,7 @@ fn round_div(a: i64, b: i64) -> i64 {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct RmsNormProof {
     pub trunc: VirtualProof,
     pub s_index: Vec<u32>,

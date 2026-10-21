@@ -15,6 +15,7 @@ use zkie_core::common::logup_gkr::{
 use zkie_core::common::mle;
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SoftmaxScaledProof {
     pub lookup: FractionalProof,
     pub row_sum: VirtualProof,
@@ -28,6 +29,7 @@ pub struct SoftmaxScaledProof {
 
 /// Rounded softmax output (GPT-2 semantics): `out = round(e * 2^16 / sum)` at
 /// scale 2^16, with `rem = e * 2^16 - out * sum` as a witness (not range-checked).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SoftmaxRoundedProof {
     pub row_sum: VirtualProof,
     pub rescale: VirtualProof,

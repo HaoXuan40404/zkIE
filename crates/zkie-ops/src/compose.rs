@@ -713,6 +713,7 @@ pub enum Op {
 
 /// A proof for one op, kept heterogeneous because the primitives have different
 /// proof shapes.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum OpProof {
     Transpose,
     Scale,
@@ -806,6 +807,7 @@ pub fn rsqrt_index(var: i64) -> u32 {
 
 /// A shard proof: per-op proofs plus the `same_poly` bindings on every
 /// multiply-consumed activation tensor.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct OpShardProof {
     pub ops: Vec<OpProof>,
     /// Batched rsqrt lookup (one sumcheck for every RmsNorm in this shard).
@@ -1870,6 +1872,7 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
 /// A whole-model shard-DAG proof: every shard folded into one g, plus
 /// `same_poly` cross-shard bindings on every tensor claimed by more than one
 /// shard. `ops_per_shard` is the public granularity parameter.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct ShardDagProof {
     pub shards: Vec<OpShardProof>,
     pub cross_tensors: Vec<T>,

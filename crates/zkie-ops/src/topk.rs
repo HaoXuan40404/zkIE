@@ -17,6 +17,7 @@ use zkie_core::common::logup_gkr::{
 use zkie_core::common::mle;
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TopKSelectProof {
     pub gate_rel: VirtualProof,
     pub d1_rel: VirtualProof,

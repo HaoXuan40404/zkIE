@@ -10,6 +10,7 @@ use zkie_core::common::logup_gkr::{
 };
 use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, MatmulProof};
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct ProjectionProof {
     pub matmul: MatmulProof,
     pub affine: VirtualProof,

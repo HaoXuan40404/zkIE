@@ -7,7 +7,7 @@ use crate::common::field::{Field, Goldilocks, PrimeCharacteristicRing};
 use crate::common::fixed_point::from_i64;
 use rayon::prelude::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RoundPoly {
     pub c0: Goldilocks,
     pub c1: Goldilocks,
@@ -21,7 +21,7 @@ impl RoundPoly {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SumcheckProof {
     pub rounds: Vec<RoundPoly>,
     pub f_eval: Goldilocks,
@@ -112,7 +112,7 @@ pub fn verify(
 
 /// A degree-3 round polynomial `c0 + c1 x + c2 x^2 + c3 x^3` for the triple
 /// product sum-check `H = sum f(x) g(x) h(x)`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RoundPoly3 {
     pub c0: Goldilocks,
     pub c1: Goldilocks,
@@ -127,7 +127,7 @@ impl RoundPoly3 {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SumcheckProof3 {
     pub rounds: Vec<RoundPoly3>,
     pub f_eval: Goldilocks,
@@ -233,7 +233,7 @@ pub fn verify3(
 
 /// Sum-check proof for `H = sum_x sum_i w_i(x) * v_i(x)` (a sum of products of
 /// two multilinears), used by the multi-point-to-one-point batch opening.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SumcheckProofBatch {
     pub rounds: Vec<RoundPoly>,
     pub b_eval: Goldilocks,
@@ -370,6 +370,7 @@ mod tests {
 /// A sum of products of multilinear polynomials: g(x) = sum_i coeff_i * prod_{j in term_i} f_j(x).
 /// Proves sum_{x in {0,1}^t} g(x) = claimed with a single sumcheck whose round
 /// polynomial has degree max_i |term_i|.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct VirtualProof {
     pub rounds: Vec<Vec<Goldilocks>>,
     pub final_evals: Vec<Goldilocks>,

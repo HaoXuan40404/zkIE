@@ -8,6 +8,7 @@
 use crate::common::field::{Goldilocks, PrimeCharacteristicRing};
 use crate::{common::mle, common::sumcheck, common::sumcheck::SumcheckProof};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct MatmulProof {
     pub claimed: Goldilocks,
     pub sumcheck: SumcheckProof,
@@ -59,6 +60,7 @@ pub fn verify(proof: &MatmulProof, challenges: &[Goldilocks]) -> bool {
 /// single-contraction sumchecks: step1 proves `E = C @ D` over `n` and leaves a
 /// claim `C(u, ch_n)`; step2 proves `C = A @ B` over `k` at that same point and
 /// leaves claims on `A` and `B`. Cost is O(n) + O(k) rounds, not O(m*k*n*l).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct MatmulChainProof {
     pub claimed: Goldilocks,
     pub step1: MatmulProof,

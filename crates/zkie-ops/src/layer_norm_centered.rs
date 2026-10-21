@@ -22,6 +22,7 @@ fn round_div(a: i64, b: i64) -> i64 {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct LayerNormCenteredProof {
     pub mean: VirtualProof,
     pub centered: VirtualProof,

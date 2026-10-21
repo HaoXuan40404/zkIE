@@ -3,11 +3,13 @@
 use crate::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use crate::common::fixed_point::from_i64;
 use crate::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FractionalLayer {
     pub r: Vec<Goldilocks>,
     pub c: Goldilocks,
     pub proof: VirtualProof,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FractionalProof {
     pub layers: Vec<FractionalLayer>,
     pub final_num: Goldilocks,
