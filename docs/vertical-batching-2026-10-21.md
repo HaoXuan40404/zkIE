@@ -47,17 +47,20 @@ opening — restoring one group's Merkle tree at a time — brings peak RSS back
 124.96GB, matching the prior 124.9GB record. Memory scales with activated
 parameters, not total parameters.
 
-## Cost: prove is slower than the un-batched baseline
+## Cost and effect
 
-DeepSeek seq=16 against the prior un-batched record (lazy-open MoE + mmap):
-prove 515s -> 2411s (~4.7x slower), verify 268s -> 271s (~unchanged), memory
-124.9GB -> 124.96GB.
+The prior DeepSeek seq=16 record (515s prove / 268s verify) had no weight PCS:
+weights were memory-mapped and verified as plaintext during forward
+recomputation, so there was no opening and no security parameter in play.
 
-The prove slowdown is the lazy restore of ~1254 Merkle trees (173GB read back
-from disk) plus one batch commit per group. Verify is effectively unchanged
-because its dominant cost is forward recomputation, not PCS opening. This
-confirms that vertical batching shifts online cost toward prove and saves little
-on verify while forward recomputation remains the bottleneck.
+This run adds 90-bit weight commitments and verifies them end to end:
+prove 515s -> 2411s, verify 268s -> 271s, memory 124.9GB -> 124.96GB.
+
+- Verify: adding 90-bit weight-commitment verification costs only ~3s. That is
+  the payoff of batch opening — without batching, per-weight openings at 90 bits
+  would be far more expensive.
+- Prove: the ~4.7x slowdown is the one-time pack/commit (~224s) plus lazily
+  restoring ~1254 Merkle trees (173GB read back from disk) for opening.
 
 ## Notes
 
