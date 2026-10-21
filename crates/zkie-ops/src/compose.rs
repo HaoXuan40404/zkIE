@@ -1965,6 +1965,22 @@ pub fn prove_shard_dag(
     }
 }
 
+/// Standalone verifier entry: deserialize a serialized  from
+/// bytes and verify it against the public statement (tables + ops + granularity).
+/// No witness Store is touched.
+pub fn verify_shard_dag_bytes(
+    proof_bytes: &[u8],
+    tables: &[&[Goldilocks]],
+    ops: &[Op],
+    ops_per_shard: usize,
+) -> bool {
+    let proof: ShardDagProof = match bincode::deserialize(proof_bytes) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    verify_shard_dag(tables, ops, ops_per_shard, &proof)
+}
+
 pub fn verify_shard_dag(
     tables: &[&[Goldilocks]],
     ops: &[Op],
@@ -3286,6 +3302,21 @@ mod tests {
             0,
             shift,
         ));
+    }
+
+    #[test]
+    fn shard_dag_serialization_roundtrip() {
+        let mut rng = XorShift64::new(0x2020);
+        let (m, k, n) = (4usize, 8usize, 8usize);
+        let mut store = Store::new();
+        let a = store.push((0..m * k).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
+        let b = store.push((0..k * n).map(|_| from_i64((rng.next_u64() % 50) as i64)).collect());
+        let c = store.push(vec![]);
+        let ops = vec![Op::MatMul { a, b, c, m, k, n }];
+        let proof = prove_shard_dag(&mut store, &ops, 1);
+        assert!(verify_shard_dag(&store.owned_slices(), &ops, 1, &proof));
+        let bytes = bincode::serialize(&proof).unwrap();
+        assert!(verify_shard_dag_bytes(&bytes, &store.owned_slices(), &ops, 1));
     }
 
     #[test]
