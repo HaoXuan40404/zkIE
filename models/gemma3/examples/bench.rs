@@ -65,7 +65,7 @@ fn main() {
         let mut rng = XorShift64::new(0xBEEF);
         let t0 = std::time::Instant::now();
         let proof = prove_shard_dag(&mut store, &ops, pps, &mut rng);
-        let openings = vertical_weights_e2e::prove_weight_openings(&batches, &proof);
+        let openings = vertical_weights_e2e::prove_weight_openings(&store, &batches, &proof);
         let prove_t = t0.elapsed();
         let t1 = std::time::Instant::now();
         assert!(

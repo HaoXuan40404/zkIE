@@ -9,43 +9,55 @@ of a sidecar micro-benchmark.
   weights into one MLE, commits each group once (cacheable), then opens all of a
   model's weight claims in a single batch per group. It is split into three
   phases so the harness times model commitment, prove, and verify separately.
-- Each model bench now runs this three-phase end-to-end path and reports
+- Prover data is streamed to a per-group cache and dropped after commit; the
+  opening and verify phases lazily restore one group's Merkle tree at a time
+  (lazy opening), so peak memory scales with a single group, not the whole model.
+- Each model bench runs this three-phase end-to-end path and reports
   `commit` / `prove` / `verify` separately. The old baseline-vs-packed sidecar
   measurement is removed.
 
 ## Results
 
-Security level 90, PoW bits 17, group size 4.
+Security level 90, PoW bits 17, group size 4 (clamped to keep the packed
+codeword within the PoW budget).
 
 | Model | Config | Commit | Prove | Verify | Argmax | Peak RSS |
 | --- | --- | --- | --- | --- | --- | --- |
 | GPT-2 | seq=16, 13 shards | 10.22s (cached) | 33.80s | 9.30s | 16/16 | - |
-| GPT-2 | seq=16, 1 shard | 10.22s (cached) | 107.63s | 83.00s | 16/16 | - |
 | GPT-2 | seq=512, 13 shards | 10.21s (cached) | 47.38s | 20.15s | 511/512 | - |
-| GPT-2 | seq=512, 1 shard | 10.21s (cached) | 164.01s | 144.45s | 511/512 | - |
 | TimesFM 200M | seq=16, pps=108 | 94.66s (first) | 72.59s | 11.81s | - | 48.4GB |
 | Gemma 3 | seq=16, pps=53 | 28.95s (first) | 46.58s | 17.02s | 16/16 | 30.2GB |
-| DeepSeek-V2-Lite | seq=16 | - | - | - | - | OOM (>415GB) |
+| DeepSeek-V2-Lite | seq=16 | 224.05s (cached) | 2411.20s | 271.06s | ok | 124.96GB |
 
 `Commit` is the model-commitment phase: pack + WHIR commit + cache write on the
 first run, or cache load on later runs. GPT-2's 10.2s is a cached run;
 TimesFM/Gemma 3 numbers are first runs that write the cache.
 
-Correctness holds: GPT-2 seq=512 argmax 511/512 (one near-tie fixed-point,
-matching prior records), Gemma 3 16/16. The batch-opening proofs are now part
-of the prove/verify path (`verify_weight_openings` is asserted), not a sidecar.
+Correctness holds: GPT-2 seq=512 argmax 511/512 (one near-tie fixed-point),
+Gemma 3 16/16, DeepSeek verify `ok=true open_ok=true`. The batch-opening proofs
+are part of the prove/verify path (`verify_weight_openings` is asserted), not a
+sidecar.
 
-## Key finding: DeepSeek-V2-Lite OOM
+## Key finding: lazy opening is required for large MoE
 
-DeepSeek-V2-Lite's 64-routed-expert MoE produces ~992 same-shape projection
+DeepSeek-V2-Lite's 64-routed-expert MoE produces ~1254 same-shape projection
 weight groups (173GB of cached WHIR prover data). Keeping all of them resident
-for batch opening pushed peak RSS past 415GB, which the 495GB machine could not
-sustain, so the process was OOM-killed.
+for batch opening OOM-killed the 495GB machine (peak RSS past 415GB). Lazy
+opening — restoring one group's Merkle tree at a time — brings peak RSS back to
+124.96GB, matching the prior 124.9GB record. Memory scales with activated
+parameters, not total parameters.
 
-This confirms that full-resident weight commitments do not scale to large MoE
-models. The prover should commit all expert weights once but only load/open the
-activated experts (lazy opening), i.e. the "full commitment + lazy opening"
-design. Memory should scale with activated parameters, not total parameters.
+## Cost: prove is slower than the un-batched baseline
+
+DeepSeek seq=16 against the prior un-batched record (lazy-open MoE + mmap):
+prove 515s -> 2411s (~4.7x slower), verify 268s -> 271s (~unchanged), memory
+124.9GB -> 124.96GB.
+
+The prove slowdown is the lazy restore of ~1254 Merkle trees (173GB read back
+from disk) plus one batch commit per group. Verify is effectively unchanged
+because its dominant cost is forward recomputation, not PCS opening. This
+confirms that vertical batching shifts online cost toward prove and saves little
+on verify while forward recomputation remains the bottleneck.
 
 ## Notes
 
