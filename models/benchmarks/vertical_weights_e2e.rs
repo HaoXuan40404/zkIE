@@ -85,15 +85,16 @@ pub fn commit_weight_batches(
     for (elements, tensor_ids) in by_len {
         let arity = elements.trailing_zeros() as usize;
         assert_eq!(elements, 1usize << arity);
-        // Clamp the group size so the packed codeword stays within the Whir PoW
-        // budget. The packed codeword has num_vars = arity + log2(group_size);
-        // pow_bits=17 is enough for num_vars <= 25, so never pack beyond that.
-        let max_group = if arity <= 25 {
-            1usize << (25 - arity)
+        // Horizontal merge: pack as many same-arity weights as the Whir PoW
+        // budget allows into ONE BatchCtx, so a single FRI opening covers every
+        // claim of that arity. num_vars = arity + log2(group_size); pow_bits=17
+        // is enough for num_vars <= 26, so never pack beyond that.
+        let max_group = if arity <= 26 {
+            1usize << (26 - arity)
         } else {
             1
         };
-        let eff_group_size = group_size.min(max_group).max(1);
+        let eff_group_size = max_group.max(1);
         for (chunk_idx, ids) in tensor_ids.chunks(eff_group_size).enumerate() {
             let table_map: HashMap<usize, usize> =
                 ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
