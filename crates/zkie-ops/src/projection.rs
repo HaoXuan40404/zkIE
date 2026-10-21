@@ -144,7 +144,7 @@ pub fn verify_projection(
     let b_restricted = zkie_core::common::mle::partial_eval(w, &proof.v);
     let f_eval = zkie_core::common::mle::eval(&a_restricted, &proof.ch);
     let h_eval = zkie_core::common::mle::eval(&b_restricted, &proof.ch);
-    if !matmul_verify(&proof.matmul, &proof.ch, f_eval, h_eval) {
+    if !matmul_verify(&proof.matmul, &proof.ch) {
         return false;
     }
     let table: Vec<Goldilocks> = (0..(1usize << shift))

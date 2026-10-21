@@ -44,13 +44,14 @@ pub fn prove(
     MatmulProof { claimed, sumcheck }
 }
 
-pub fn verify(
-    proof: &MatmulProof,
-    challenges: &[Goldilocks],
-    f_eval: Goldilocks,
-    h_eval: Goldilocks,
-) -> bool {
-    sumcheck::verify(&proof.sumcheck, proof.claimed, challenges, f_eval, h_eval)
+pub fn verify(proof: &MatmulProof, challenges: &[Goldilocks]) -> bool {
+    sumcheck::verify(
+        &proof.sumcheck,
+        proof.claimed,
+        challenges,
+        proof.sumcheck.f_eval,
+        proof.sumcheck.h_eval,
+    )
 }
 
 /// Nested matmul reduction: prove `E = (A @ B) @ D` with the intermediate
@@ -103,15 +104,11 @@ pub fn verify_chain(
     proof: &MatmulChainProof,
     ch_n: &[Goldilocks],
     ch_k: &[Goldilocks],
-    a_eval: Goldilocks,
-    b_eval: Goldilocks,
-    d_eval: Goldilocks,
 ) -> bool {
-    let c_eval = proof.step2.claimed;
-    if !verify(&proof.step2, ch_k, a_eval, b_eval) {
+    if !verify(&proof.step2, ch_k) {
         return false;
     }
-    verify(&proof.step1, ch_n, c_eval, d_eval)
+    verify(&proof.step1, ch_n)
 }
 
 #[cfg(test)]
@@ -165,7 +162,7 @@ mod tests {
         let ch_k: Vec<Goldilocks> = (0..k.trailing_zeros() as usize)
             .map(|_| rng.field())
             .collect();
-        let proof = prove_chain(&at, &b, &c, &d, &e, m, k, n, l, &u, &l_pt, &ch_n, &ch_k);
+        let mut proof = prove_chain(&at, &b, &c, &d, &e, m, k, n, l, &u, &l_pt, &ch_n, &ch_k);
 
         let mut p_ak = ch_k.clone();
         p_ak.extend_from_slice(&u);
@@ -177,14 +174,8 @@ mod tests {
         p_d.extend_from_slice(&ch_n);
         let d_eval = crate::common::mle::eval(&d, &p_d); // D[ch_n][l_pt]
 
-        assert!(verify_chain(&proof, &ch_n, &ch_k, a_eval, b_eval, d_eval));
-        assert!(!verify_chain(
-            &proof,
-            &ch_n,
-            &ch_k,
-            a_eval,
-            b_eval + Goldilocks::ONE,
-            d_eval
-        ));
+        assert!(verify_chain(&proof, &ch_n, &ch_k));
+        proof.step2.claimed = proof.step2.claimed + Goldilocks::ONE;
+        assert!(!verify_chain(&proof, &ch_n, &ch_k));
     }
 }

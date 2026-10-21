@@ -45,35 +45,22 @@ pub fn prove_same_poly(
 }
 pub fn verify_same_poly(
     proof: &SamePolyProof,
-    f: &[Goldilocks],
     claims: &[(Vec<Goldilocks>, Goldilocks)],
 ) -> Option<Goldilocks> {
-    let eqs: Vec<Vec<Goldilocks>> = claims
-        .iter()
-        .map(|(r_i, _)| crate::common::mle::eq_evals(r_i))
-        .collect();
     let mut terms: Vec<(Goldilocks, Vec<usize>)> = Vec::new();
     let mut claimed = Goldilocks::from_u64(0);
     for (i, (_, y_i)) in claims.iter().enumerate() {
         terms.push((proof.coeffs[i], vec![0usize, i + 1]));
         claimed = claimed + proof.coeffs[i] * *y_i;
     }
-    let mut mles: Vec<&[Goldilocks]> = vec![f];
-    for e in &eqs {
-        mles.push(e.as_slice());
-    }
-    let final_evals: Vec<Goldilocks> = mles
-        .iter()
-        .map(|m| crate::common::mle::eval(m, &proof.merged_point))
-        .collect();
     if verify_virtual(
         &proof.proof,
         &terms,
         claimed,
         &proof.merged_point,
-        &final_evals,
+        &proof.proof.final_evals,
     ) {
-        Some(final_evals[0])
+        Some(proof.merged_eval)
     } else {
         None
     }
@@ -96,7 +83,7 @@ mod tests {
             })
             .collect();
         let proof = prove_same_poly(&f, &claims, &mut rng);
-        let merged = verify_same_poly(&proof, &f, &claims);
+        let merged = verify_same_poly(&proof, &claims);
         assert!(merged.is_some());
         assert_eq!(
             merged.unwrap(),
@@ -104,6 +91,6 @@ mod tests {
         );
         let mut bad = claims.clone();
         bad[0].1 = bad[0].1 + Goldilocks::from_u64(1);
-        assert!(verify_same_poly(&proof, &f, &bad).is_none());
+        assert!(verify_same_poly(&proof, &bad).is_none());
     }
 }

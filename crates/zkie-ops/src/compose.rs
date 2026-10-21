@@ -210,7 +210,7 @@ pub fn verify_projection_chain(
             (out_pt.clone(), mle::eval(&ys[i], &out_pt)),
             (in_pt.clone(), mle::eval(&ys[i], &in_pt)),
         ];
-        if verify_same_poly(&proof.binds[i - 1], &ys[i], &claims).is_none() {
+        if verify_same_poly(&proof.binds[i - 1], &claims).is_none() {
             return false;
         }
     }
@@ -311,7 +311,7 @@ pub fn verify_projection_sharded(
             (out_pt.clone(), mle::eval(&ys[b], &out_pt)),
             (in_pt.clone(), mle::eval(&ys[b], &in_pt)),
         ];
-        if verify_same_poly(&proof.cross_binds[ci], &ys[b], &claims).is_none() {
+        if verify_same_poly(&proof.cross_binds[ci], &claims).is_none() {
             return false;
         }
     }
@@ -488,7 +488,7 @@ pub fn verify_residual_chain(
         claims.push((in_pt.clone(), mle::eval(&xs[i], &in_pt)));
         let r_i = proof.adds[i].1.clone();
         claims.push((r_i.clone(), mle::eval(&xs[i], &r_i)));
-        if verify_same_poly(&proof.same_x[i], &xs[i], &claims).is_none() {
+        if verify_same_poly(&proof.same_x[i], &claims).is_none() {
             return false;
         }
     }
@@ -500,7 +500,7 @@ pub fn verify_residual_chain(
             (pt_i.clone(), mle::eval(&ps[i], &pt_i)),
             (r_i.clone(), mle::eval(&ps[i], &r_i)),
         ];
-        if verify_same_poly(&proof.same_p[i], &ps[i], &claims).is_none() {
+        if verify_same_poly(&proof.same_p[i], &claims).is_none() {
             return false;
         }
     }
@@ -1746,34 +1746,12 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
             (Op::ScaleGate { .. }, OpProof::ScaleGate) => {}
             (Op::Relu { .. }, OpProof::Relu) => {}
             (
-                Op::MatMul {
-                    a,
-                    b,
-                    c,
-                    m,
-                    k,
-                    n: _,
-                },
-                OpProof::MatMul(mp, u, v, ch),
+                Op::MatMul { .. },
+                OpProof::MatMul(mp, _, _, ch),
             ) => {
-                let at = transpose(ws.get(*a), *m, *k);
-                let a_restricted = mle::partial_eval(&at, u);
-                let bv = ws.materialize(*b);
-                let b_restricted = mle::partial_eval(bv.as_ref(), v);
-                let f_eval = mle::eval(&a_restricted, ch);
-                let h_eval = mle::eval(&b_restricted, ch);
-                if !matmul_verify(mp, ch, f_eval, h_eval) {
+                if !matmul_verify(mp, ch) {
                     return false;
                 }
-                let mut ap = ch.clone();
-                ap.extend_from_slice(u);
-                claims.push((*a, ap.clone(), mle::eval(ws.get(*a), &ap)));
-                let mut bp = v.clone();
-                bp.extend_from_slice(ch);
-                claims.push((*b, bp.clone(), mle::eval(bv.as_ref(), &bp)));
-                let mut cp = v.clone();
-                cp.extend_from_slice(u);
-                claims.push((*c, cp.clone(), mle::eval(ws.get(*c), &cp)));
             }
             (
                 Op::Projection {
@@ -2032,8 +2010,8 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
     // Rebuild the same grouping as prove_shard and verify each binding.
     let mut by_tensor: std::collections::BTreeMap<T, Vec<(Vec<Goldilocks>, Goldilocks)>> =
         std::collections::BTreeMap::new();
-    for (t, pt, ev) in claims {
-        by_tensor.entry(t).or_default().push((pt, ev));
+    for (t, pt, ev) in &proof.claims {
+        by_tensor.entry(*t).or_default().push((pt.clone(), *ev));
     }
     // Recompute which tensors are bound (same rule: >1 claim). We rely on the
     // proof's `bound` list to be the canonical order.
@@ -2048,7 +2026,7 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
         return false;
     }
     for (i, &t) in proof.bound.iter().enumerate() {
-        if verify_same_poly(&proof.binds[i], store.get(t), &bound_claims[i]).is_none() {
+        if verify_same_poly(&proof.binds[i], &bound_claims[i]).is_none() {
             return false;
         }
     }
@@ -2236,7 +2214,7 @@ pub fn verify_shard_dag(
             .iter()
             .map(|pt| (pt.clone(), mle::eval(store.get(t), pt)))
             .collect();
-        if verify_same_poly(&proof.cross_binds[ci], store.get(t), &claims).is_none() {
+        if verify_same_poly(&proof.cross_binds[ci], &claims).is_none() {
             return false;
         }
     }
@@ -2294,7 +2272,7 @@ pub fn verify_committed_cross_bind(
             return false;
         }
     }
-    verify_same_poly(proof, tensor, claims).is_some()
+    verify_same_poly(proof, claims).is_some()
 }
 
 /// A committed shard-DAG proof: every shard proven as before (plain sumchecks,

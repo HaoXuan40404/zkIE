@@ -32,7 +32,7 @@ fn main() {
     let mut h_point = v.clone();
     h_point.extend_from_slice(&challenges);
     let h_eval = mle::eval(&b, &h_point);
-    assert!(matmul::verify(&proof, &challenges, f_eval, h_eval));
+    assert!(matmul::verify(&proof, &challenges));
 
     let gkr_field_ops = m * k + k * n + 6 * k;
     let halo2_rows = m * n * (k + 184);
