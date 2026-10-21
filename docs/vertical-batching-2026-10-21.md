@@ -39,6 +39,32 @@ Gemma 3 16/16 (seq=512 505/512, fixed-point drift at longer sequences),
 DeepSeek verify `ok=true open_ok=true`. The batch-opening proofs are part of the
 prove/verify path (`verify_weight_openings` is asserted), not a sidecar.
 
+## Horizontal merge
+
+After the per-group (vertical) batching above, openings were still one FRI per
+group: GPT-2 150, TimesFM 332, Gemma 3 59 independent WHIR/FRI proofs. The
+opening phase now packs as many same-arity weight groups as the WHIR PoW budget
+allows into a single `BatchCtx` (num_vars = arity + log2(group_size), capped at
+26 for pow_bits=17), so one FRI opening covers every claim of that arity.
+
+| Model | Config | FRI openings before -> after | Prove before -> after | Verify before -> after |
+| --- | --- | --- | --- | --- |
+| GPT-2 | seq=16 | 150 -> 3 | 34.59s -> 33.84s | 9.46s -> 8.93s |
+| GPT-2 | seq=512 | 150 -> 3 | 47.75s -> 47.78s | 20.01s -> 19.37s |
+| TimesFM 200M | seq=16 | 332 -> 9 | 77.03s -> 77.53s | 11.66s -> 10.66s (27.7 -> 24.1GB) |
+| Gemma 3 | seq=16 | 59 -> 3 | 48.91s -> 50.24s | 16.76s -> 16.46s |
+| Gemma 3 | seq=512 | 59 -> 3 | 72.21s -> 73.04s | 34.92s -> 35.74s |
+
+Argmax is unchanged everywhere (GPT-2 16/16 and 511/512; Gemma 3 16/16 and
+505/512).
+
+Effect: independent FRI proofs drop from hundreds to single digits, which is a
+real soundness win (error no longer accumulates across hundreds of openings).
+Prove time is essentially flat (within ~2%) because the Merkle/Poseidon work
+saved by fewer openings is offset by the larger DFT of the now-packed codewords;
+the next lever for prove time is the FRI codeword transform itself (GPU / lower
+rate), not the number of openings.
+
 ## Bulk serialization
 
 The Merkle prover data (leaves + digest layers) is now written as flat POD byte
