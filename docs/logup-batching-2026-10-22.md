@@ -44,10 +44,29 @@ tables (projection / RMSNorm `0..2^16`) are sample-dominated, so batching them
 gives no time win; GELU (2^24 table) has only ~1 lookup per shard, so there is
 no within-shard opportunity.
 
+## Memory fix
+
+The batch initially raised peak RSS (~28.9 -> ~39.3 GB on Gemma 3 seq=512, and
+~125 -> ~147 GB extrapolated on DeepSeek seq=16). Root cause: `prove_fractional`
+copied the four half-slices at every folding layer (`to_vec()`), so the peak was
+~7N per lookup. Fixed by taking ownership of `num`/`den` and folding via
+`split_at` slices (peak ~3N), commit `e7948bc`.
+
+### Results after the memory fix
+
+| model | prove | verify | argmax | peak RSS |
+| --- | --- | --- | --- | --- |
+| GPT-2 seq=16 | 25.71 s | 5.81 s | 16/16 | - |
+| GPT-2 seq=512 | 41.08 s | 17.04 s | 511/512 | - |
+| TimesFM seq=16 | 67.40 s | 6.93 s | - | 19.19 GB |
+| Gemma 3 seq=16 | 34.31 s | 11.46 s | 16/16 | - |
+| Gemma 3 seq=512 | 58.17 s | 31.04 s | 505/512 | 28.62 GB |
+| DeepSeek-V2-Lite seq=16 | 1627.21 s | 252.09 s | ok=true | 101.84 GB |
+
+Gemma 3 seq=512 peak RSS is back to the pre-batch baseline (28.62 GB).
+DeepSeek-V2-Lite seq=16 peak RSS -18.5% (124.95 -> 101.84 GB).
+
 ## Notes
 
-- Peak RSS rises ~28.9 -> ~39.3 GB (+36%). `Store::get` is borrow-only (no mmap
-  materialisation), so the increase is believed to be transient batch folding
-  allocations across the 22 parallel shards; needs a heap profile before running
-  memory-bound models such as DeepSeek.
 - 37 zkie-ops unit tests pass; full workspace release build is green.
+- DeepSeek-V2-Lite seq=512 pending (long run); will be added when it completes.
