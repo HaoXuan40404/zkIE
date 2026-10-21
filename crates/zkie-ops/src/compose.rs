@@ -1683,7 +1683,8 @@ pub fn prove_shard_precomputed(
         let a = rng.field();
         let b = rng.field();
         let tid = softmax_table_id.expect("softmax table");
-        let pr = prove_lookup_fractional_batch(&softmax_idx, &softmax_vals, store.get(tid), a, b, rng);
+        let pr =
+            prove_lookup_fractional_batch(&softmax_idx, &softmax_vals, store.get(tid), a, b, rng);
         (Some(pr), a, b)
     };
 
@@ -1952,7 +1953,14 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                     return false;
                 }
                 let (_ms, s_idx, rstd_v, _out, _rem_out, _rem_lo, _rem_hi, _sum_sq, _rem_s) =
-                    rms_norm_forward(ws.get(*x), ws.get(*w), ws.get(*rsqrt_table), *m, *d, *n_real);
+                    rms_norm_forward(
+                        ws.get(*x),
+                        ws.get(*w),
+                        ws.get(*rsqrt_table),
+                        *m,
+                        *d,
+                        *n_real,
+                    );
                 rsqrt_idx.push(s_idx);
                 rsqrt_vals.push(rstd_v);
                 rsqrt_table_id = Some(*rsqrt_table);

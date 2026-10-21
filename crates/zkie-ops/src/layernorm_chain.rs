@@ -5,7 +5,9 @@
 
 use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64};
 use zkie_core::common::fixed_point::{from_i64, to_i64};
-use zkie_core::common::logup_gkr::{prove_lookup_fractional, verify_lookup_fractional, FractionalProof};
+use zkie_core::common::logup_gkr::{
+    prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
+};
 use zkie_core::common::mle;
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 
@@ -43,11 +45,15 @@ pub fn prove_layernorm_chain(
     let out: Vec<Goldilocks> = (0..m * d).map(|ij| x[ij] * scale[ij] + b[ij]).collect();
 
     // 1. mean_sq reduction: sum_{i,j} eq(r,i) * x^2 = mean_sq(r)
-    let r_mean: Vec<Goldilocks> = (0..m.trailing_zeros() as usize).map(|_| rng.field()).collect();
+    let r_mean: Vec<Goldilocks> = (0..m.trailing_zeros() as usize)
+        .map(|_| rng.field())
+        .collect();
     let eq_i = mle::eq_evals(&r_mean);
     let eq_b: Vec<Goldilocks> = (0..m * d).map(|idx| eq_i[idx / d]).collect();
     let mean_claim = mle::eval(&mean_sq, &r_mean);
-    let mean_ch: Vec<Goldilocks> = (0..(m * d).trailing_zeros() as usize).map(|_| rng.field()).collect();
+    let mean_ch: Vec<Goldilocks> = (0..(m * d).trailing_zeros() as usize)
+        .map(|_| rng.field())
+        .collect();
     let mean_sq_proof = prove_virtual(
         &[&eq_b, x],
         &[(Goldilocks::ONE, vec![0usize, 1usize, 1usize])],
@@ -61,19 +67,16 @@ pub fn prove_layernorm_chain(
     let rsqrt_proof = prove_lookup_fractional(&rsqrt_idx, &rsqrt, rsqrt_table, alpha, beta, rng);
 
     // 3. out affine: out = x * scale + b  (i.e. x*scale + b - out = 0)
-    let r_out: Vec<Goldilocks> = (0..(m * d).trailing_zeros() as usize).map(|_| rng.field()).collect();
+    let r_out: Vec<Goldilocks> = (0..(m * d).trailing_zeros() as usize)
+        .map(|_| rng.field())
+        .collect();
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
     let terms = vec![
         (Goldilocks::ONE, vec![0usize, 1usize]),
         (Goldilocks::ONE, vec![2usize]),
         (neg, vec![3usize]),
     ];
-    let out_proof = prove_virtual(
-        &[x, &scale, b, &out],
-        &terms,
-        Goldilocks::ZERO,
-        &r_out,
-    );
+    let out_proof = prove_virtual(&[x, &scale, b, &out], &terms, Goldilocks::ZERO, &r_out);
 
     LayernormChainProof {
         mean_sq: mean_sq_proof,
@@ -124,7 +127,14 @@ pub fn verify_layernorm_chain(
     ) {
         return false;
     }
-    if !verify_lookup_fractional(&proof.rsqrt, &rsqrt_idx, &rsqrt, rsqrt_table, proof.alpha, proof.beta) {
+    if !verify_lookup_fractional(
+        &proof.rsqrt,
+        &rsqrt_idx,
+        &rsqrt,
+        rsqrt_table,
+        proof.alpha,
+        proof.beta,
+    ) {
         return false;
     }
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
@@ -150,11 +160,25 @@ mod tests {
     fn layernorm_chain_roundtrip() {
         let mut rng = XorShift64::new(0x9E9E);
         let (m, d) = (8usize, 8usize);
-        let x: Vec<Goldilocks> = (0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64)).collect();
-        let w: Vec<Goldilocks> = (0..m * d).map(|_| from_i64((rng.next_u64() % 5) as i64 + 1)).collect();
-        let b: Vec<Goldilocks> = (0..m * d).map(|_| from_i64((rng.next_u64() % 10) as i64 - 5)).collect();
+        let x: Vec<Goldilocks> = (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 10) as i64))
+            .collect();
+        let w: Vec<Goldilocks> = (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 5) as i64 + 1))
+            .collect();
+        let b: Vec<Goldilocks> = (0..m * d)
+            .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
+            .collect();
         let rsqrt_table: Vec<Goldilocks> = (0..(1usize << 8)).map(|_| rng.field()).collect();
         let proof = prove_layernorm_chain(&x, &w, &b, &rsqrt_table, m, d, &mut rng);
-        assert!(verify_layernorm_chain(&proof, &x, &w, &b, &rsqrt_table, m, d));
+        assert!(verify_layernorm_chain(
+            &proof,
+            &x,
+            &w,
+            &b,
+            &rsqrt_table,
+            m,
+            d
+        ));
     }
 }

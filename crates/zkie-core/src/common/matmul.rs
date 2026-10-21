@@ -153,10 +153,18 @@ mod tests {
         let c = mm(&a, &b, m, k, n);
         let e = mm(&c, &d, m, n, l);
         let at = transpose(&a, m, k);
-        let u: Vec<Goldilocks> = (0..m.trailing_zeros() as usize).map(|_| rng.field()).collect();
-        let l_pt: Vec<Goldilocks> = (0..l.trailing_zeros() as usize).map(|_| rng.field()).collect();
-        let ch_n: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
-        let ch_k: Vec<Goldilocks> = (0..k.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let u: Vec<Goldilocks> = (0..m.trailing_zeros() as usize)
+            .map(|_| rng.field())
+            .collect();
+        let l_pt: Vec<Goldilocks> = (0..l.trailing_zeros() as usize)
+            .map(|_| rng.field())
+            .collect();
+        let ch_n: Vec<Goldilocks> = (0..n.trailing_zeros() as usize)
+            .map(|_| rng.field())
+            .collect();
+        let ch_k: Vec<Goldilocks> = (0..k.trailing_zeros() as usize)
+            .map(|_| rng.field())
+            .collect();
         let proof = prove_chain(&at, &b, &c, &d, &e, m, k, n, l, &u, &l_pt, &ch_n, &ch_k);
 
         let mut p_ak = ch_k.clone();
@@ -170,6 +178,13 @@ mod tests {
         let d_eval = crate::common::mle::eval(&d, &p_d); // D[ch_n][l_pt]
 
         assert!(verify_chain(&proof, &ch_n, &ch_k, a_eval, b_eval, d_eval));
-        assert!(!verify_chain(&proof, &ch_n, &ch_k, a_eval, b_eval + Goldilocks::ONE, d_eval));
+        assert!(!verify_chain(
+            &proof,
+            &ch_n,
+            &ch_k,
+            a_eval,
+            b_eval + Goldilocks::ONE,
+            d_eval
+        ));
     }
 }

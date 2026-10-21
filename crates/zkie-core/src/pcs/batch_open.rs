@@ -102,10 +102,21 @@ pub fn batch_open_committed(
     let challenges: Vec<Goldilocks> = (0..d).map(|_| rng.field()).collect();
     let proof = sumcheck::prove_sum_of_products(&weights, tensors, claimed_sum, &challenges);
 
-    let (open_proof, evals) = batch.whir.open_batch_multi(batch.prover_data.clone(), &batch.protocol, batch.num_tables, &challenges);
+    let (open_proof, evals) = batch.whir.open_batch_multi(
+        batch.prover_data.clone(),
+        &batch.protocol,
+        batch.num_tables,
+        &challenges,
+    );
     let evals_ok = batch
         .whir
-        .verify_batch_multi(&batch.commitment, &open_proof, &batch.protocol, batch.num_tables, &challenges)
+        .verify_batch_multi(
+            &batch.commitment,
+            &open_proof,
+            &batch.protocol,
+            batch.num_tables,
+            &challenges,
+        )
         .map(|v| v == evals)
         .unwrap_or(false);
 
@@ -151,12 +162,24 @@ pub fn open_table_multi_point(
     }
 
     let challenges: Vec<Goldilocks> = (0..d).map(|_| rng.field()).collect();
-    let proof = sumcheck::prove_sum_of_products(&[w.clone()], &[tensor.to_vec()], claimed_sum, &challenges);
+    let proof =
+        sumcheck::prove_sum_of_products(&[w.clone()], &[tensor.to_vec()], claimed_sum, &challenges);
 
-    let (open_proof, evals) = batch.whir.open_batch_multi(batch.prover_data.clone(), &batch.protocol, batch.num_tables, &challenges);
+    let (open_proof, evals) = batch.whir.open_batch_multi(
+        batch.prover_data.clone(),
+        &batch.protocol,
+        batch.num_tables,
+        &challenges,
+    );
     let evals_ok = batch
         .whir
-        .verify_batch_multi(&batch.commitment, &open_proof, &batch.protocol, batch.num_tables, &challenges)
+        .verify_batch_multi(
+            &batch.commitment,
+            &open_proof,
+            &batch.protocol,
+            batch.num_tables,
+            &challenges,
+        )
         .map(|v| v == evals)
         .unwrap_or(false);
 
@@ -181,20 +204,27 @@ mod tests {
         let mut rng = XorShift64::new(7);
         let d = 8usize;
         let n = 8usize;
-        let tensors: Vec<Vec<Goldilocks>> =
-            (0..n).map(|_| (0..(1usize << d)).map(|_| rng.field()).collect()).collect();
-        let points: Vec<Vec<Goldilocks>> =
-            (0..n).map(|_| (0..d).map(|_| rng.field()).collect()).collect();
-        let claimed: Vec<Goldilocks> =
-            (0..n).map(|i| mle::eval(&tensors[i], &points[i])).collect();
+        let tensors: Vec<Vec<Goldilocks>> = (0..n)
+            .map(|_| (0..(1usize << d)).map(|_| rng.field()).collect())
+            .collect();
+        let points: Vec<Vec<Goldilocks>> = (0..n)
+            .map(|_| (0..d).map(|_| rng.field()).collect())
+            .collect();
+        let claimed: Vec<Goldilocks> = (0..n).map(|i| mle::eval(&tensors[i], &points[i])).collect();
 
         let mut r1 = XorShift64::new(99);
-        assert!(batch_open(&tensors, &points, &claimed, &mut r1), "valid batch must pass");
+        assert!(
+            batch_open(&tensors, &points, &claimed, &mut r1),
+            "valid batch must pass"
+        );
 
         let mut bad = claimed.clone();
         bad[0] = bad[0] + Goldilocks::ONE;
         let mut r2 = XorShift64::new(99);
-        assert!(!batch_open(&tensors, &points, &bad, &mut r2), "corrupt claim must fail");
+        assert!(
+            !batch_open(&tensors, &points, &bad, &mut r2),
+            "corrupt claim must fail"
+        );
     }
 
     #[test]
@@ -207,13 +237,21 @@ mod tests {
         let whir = Whir::new_testing(d);
         let refs: Vec<&[Goldilocks]> = vec![tensor.as_slice()];
         let (commitment, prover_data, protocol, batch_whir) = whir.commit_batch(&refs);
-        let batch = BatchCtx { commitment, prover_data, protocol, whir: batch_whir, num_tables: 1 };
-        let points: Vec<Vec<Goldilocks>> = (0..3).map(|_| (0..d).map(|_| rng.field()).collect()).collect();
+        let batch = BatchCtx {
+            commitment,
+            prover_data,
+            protocol,
+            whir: batch_whir,
+            num_tables: 1,
+        };
+        let points: Vec<Vec<Goldilocks>> = (0..3)
+            .map(|_| (0..d).map(|_| rng.field()).collect())
+            .collect();
         let mut r2 = XorShift64::new(99);
-        let evals = open_table_multi_point(&batch, 0, &tensor, &points, &mut r2).expect("valid open");
+        let evals =
+            open_table_multi_point(&batch, 0, &tensor, &points, &mut r2).expect("valid open");
         for (i, p) in points.iter().enumerate() {
             assert_eq!(evals[i], mle::eval(&tensor, p));
         }
     }
-
 }

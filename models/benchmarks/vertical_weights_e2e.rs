@@ -128,13 +128,15 @@ pub fn commit_weight_batches(
                     .ok()
                     .and_then(|file| {
                         let mut reader = BufReader::new(file);
-                        read_header(&mut reader).ok().and_then(|(found, commitment)| {
-                            if found == metadata {
-                                Some(commitment)
-                            } else {
-                                None
-                            }
-                        })
+                        read_header(&mut reader)
+                            .ok()
+                            .and_then(|(found, commitment)| {
+                                if found == metadata {
+                                    Some(commitment)
+                                } else {
+                                    None
+                                }
+                            })
                     })
                     .unwrap_or_else(|| {
                         let (commitment, prover_data, _, _) = base_whir.commit_batch(&ref_slices);
@@ -233,14 +235,9 @@ pub fn prove_weight_openings(
             whir,
             num_tables: batch.num_tables,
         };
-        let proof = prove_batch_open_committed(
-            &ctx,
-            &table_idxs,
-            &request_tables,
-            &points,
-            &claimed,
-        )
-        .expect("prove vertical weight opening");
+        let proof =
+            prove_batch_open_committed(&ctx, &table_idxs, &request_tables, &points, &claimed)
+                .expect("prove vertical weight opening");
         openings.push(WeightOpening {
             group_idx,
             table_idxs,

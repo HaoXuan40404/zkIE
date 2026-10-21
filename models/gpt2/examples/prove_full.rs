@@ -5,9 +5,9 @@
 
 use std::fs;
 
-use zkie_ops::compose::{causal_mask, prove_shard, verify_shard, Op, Store};
 use zkie_core::common::field::{Goldilocks, XorShift64};
 use zkie_core::common::fixed_point::from_i32;
+use zkie_ops::compose::{causal_mask, prove_shard, verify_shard, Op, Store};
 
 const D: usize = 1024;
 const FFN: usize = 4096;
@@ -26,11 +26,15 @@ fn load_i32(path: &str) -> Vec<Goldilocks> {
 
 fn slice_cols(m: &[Goldilocks], cols: usize, c0: usize, c1: usize) -> Vec<Goldilocks> {
     let rows = m.len() / cols;
-    (0..rows).flat_map(|i| (c0..c1).map(move |j| m[i * cols + j])).collect()
+    (0..rows)
+        .flat_map(|i| (c0..c1).map(move |j| m[i * cols + j]))
+        .collect()
 }
 
 fn slice_rows(m: &[Goldilocks], cols: usize, r0: usize, r1: usize) -> Vec<Goldilocks> {
-    (r0..r1).flat_map(|i| (0..cols).map(move |j| m[i * cols + j])).collect()
+    (r0..r1)
+        .flat_map(|i| (0..cols).map(move |j| m[i * cols + j]))
+        .collect()
 }
 
 fn broadcast(b: &[Goldilocks], rows: usize) -> Vec<Goldilocks> {
@@ -72,7 +76,16 @@ fn build_layer(
     let ln1_w_t = store.push(broadcast(&ln1_w, m));
     let ln1_b_t = store.push(broadcast(&ln1_b, m));
     let h = store.push(vec![]);
-    ops.push(Op::LayerNormCentered { x, w: ln1_w_t, b: ln1_b_t, out: h, rsqrt_table: rsqrt_t, m, d: D, n_real: N_REAL });
+    ops.push(Op::LayerNormCentered {
+        x,
+        w: ln1_w_t,
+        b: ln1_b_t,
+        out: h,
+        rsqrt_table: rsqrt_t,
+        m,
+        d: D,
+        n_real: N_REAL,
+    });
 
     let mut head_outs = Vec::new();
     for head in 0..HEADS {
@@ -102,39 +115,154 @@ fn build_layer(
         let attn_16 = store.push(vec![]);
         let out_h = store.push(vec![]);
         let out_rem = store.push(vec![]);
-        ops.push(Op::Projection { x: h, w: qh, bias: qb, out: q, rem: qr, m, k: D, n: DH, shift });
-        ops.push(Op::Projection { x: h, w: kh, bias: kb, out: k, rem: kr, m, k: D, n: DH, shift });
-        ops.push(Op::Projection { x: h, w: vh, bias: vb, out: v, rem: vr, m, k: D, n: DH, shift });
-        ops.push(Op::Scale { x: q, out: q_scaled, factor: 23170, shift: 16 });
-        ops.push(Op::Scale { x: k, out: k_scaled, factor: 23170, shift: 16 });
-        ops.push(Op::Transpose { x: k_scaled, out: kt, m, k: DH });
-        ops.push(Op::MatMul { a: q_scaled, b: kt, c: scores, m, k: DH, n: m });
-        ops.push(Op::Scale { x: scores, out: scores_16, factor: 1, shift: 16 });
-        ops.push(Op::StableSoftmaxIndex { x: scores_16, mask: mask_t, out: idx, offset: 1 << 21, table_len, m, n: m });
-        ops.push(Op::Softmax { idx, e, out: probs, table: exp_t, m, n: m });
-        ops.push(Op::MatMul { a: probs, b: v, c: attn, m, k: m, n: DH });
-        ops.push(Op::Scale { x: attn, out: attn_16, factor: 1, shift: 16 });
-        ops.push(Op::Projection { x: attn_16, w: oh, bias: ob, out: out_h, rem: out_rem, m, k: DH, n: D, shift });
+        ops.push(Op::Projection {
+            x: h,
+            w: qh,
+            bias: qb,
+            out: q,
+            rem: qr,
+            m,
+            k: D,
+            n: DH,
+            shift,
+        });
+        ops.push(Op::Projection {
+            x: h,
+            w: kh,
+            bias: kb,
+            out: k,
+            rem: kr,
+            m,
+            k: D,
+            n: DH,
+            shift,
+        });
+        ops.push(Op::Projection {
+            x: h,
+            w: vh,
+            bias: vb,
+            out: v,
+            rem: vr,
+            m,
+            k: D,
+            n: DH,
+            shift,
+        });
+        ops.push(Op::Scale {
+            x: q,
+            out: q_scaled,
+            factor: 23170,
+            shift: 16,
+        });
+        ops.push(Op::Scale {
+            x: k,
+            out: k_scaled,
+            factor: 23170,
+            shift: 16,
+        });
+        ops.push(Op::Transpose {
+            x: k_scaled,
+            out: kt,
+            m,
+            k: DH,
+        });
+        ops.push(Op::MatMul {
+            a: q_scaled,
+            b: kt,
+            c: scores,
+            m,
+            k: DH,
+            n: m,
+        });
+        ops.push(Op::Scale {
+            x: scores,
+            out: scores_16,
+            factor: 1,
+            shift: 16,
+        });
+        ops.push(Op::StableSoftmaxIndex {
+            x: scores_16,
+            mask: mask_t,
+            out: idx,
+            offset: 1 << 21,
+            table_len,
+            m,
+            n: m,
+        });
+        ops.push(Op::Softmax {
+            idx,
+            e,
+            out: probs,
+            table: exp_t,
+            m,
+            n: m,
+        });
+        ops.push(Op::MatMul {
+            a: probs,
+            b: v,
+            c: attn,
+            m,
+            k: m,
+            n: DH,
+        });
+        ops.push(Op::Scale {
+            x: attn,
+            out: attn_16,
+            factor: 1,
+            shift: 16,
+        });
+        ops.push(Op::Projection {
+            x: attn_16,
+            w: oh,
+            bias: ob,
+            out: out_h,
+            rem: out_rem,
+            m,
+            k: DH,
+            n: D,
+            shift,
+        });
         head_outs.push(out_h);
     }
     let mut attn_acc = head_outs[0];
     for &ho in &head_outs[1..] {
         let s = store.push(vec![]);
-        ops.push(Op::Add { a: attn_acc, b: ho, c: s });
+        ops.push(Op::Add {
+            a: attn_acc,
+            b: ho,
+            c: s,
+        });
         attn_acc = s;
     }
     // Add the attention output-projection bias ONCE (after summing heads),
     // matching the float reference `x2 = x + sum(attn_heads) + o_b`.
     let o_b_t = store.push(broadcast(&o_b, m));
     let attn_biased = store.push(vec![]);
-    ops.push(Op::Add { a: attn_acc, b: o_b_t, c: attn_biased });
+    ops.push(Op::Add {
+        a: attn_acc,
+        b: o_b_t,
+        c: attn_biased,
+    });
     let x2 = store.push(vec![]);
-    ops.push(Op::Add { a: x, b: attn_biased, c: x2 });
+    ops.push(Op::Add {
+        a: x,
+        b: attn_biased,
+        c: x2,
+    });
 
     let ln2_w_t = store.push(broadcast(&ln2_w, m));
     let ln2_b_t = store.push(broadcast(&ln2_b, m));
     let h2 = store.push(vec![]);
-    ops.push(Op::LayerNormCentered { x: x2, w: ln2_w_t, b: ln2_b_t, out: h2, rsqrt_table: rsqrt_t, m, d: D, n_real: N_REAL });
+    ops.push(Op::LayerNormCentered {
+        x: x2,
+        w: ln2_w_t,
+        b: ln2_b_t,
+        out: h2,
+        rsqrt_table: rsqrt_t,
+        m,
+        d: D,
+        n_real: N_REAL,
+    });
     let fc_w_t = store.push(fc_w);
     let fc_b_t = store.push(broadcast(&fc_b, m));
     let proj_w_t = store.push(proj_w);
@@ -145,12 +273,45 @@ fn build_layer(
     let act = store.push(vec![]);
     let proj2 = store.push(vec![]);
     let proj2_rem = store.push(vec![]);
-    ops.push(Op::Projection { x: h2, w: fc_w_t, bias: fc_b_t, out: fc, rem: fc_rem, m, k: D, n: FFN, shift });
-    ops.push(Op::GeluIndex { x: fc, out: gelu_idx, offset: 1 << 23, table_len: 1 << 24 });
-    ops.push(Op::Lookup { idx: gelu_idx, out: act, table: gelu_t });
-    ops.push(Op::Projection { x: act, w: proj_w_t, bias: proj_b_t, out: proj2, rem: proj2_rem, m, k: FFN, n: D, shift });
+    ops.push(Op::Projection {
+        x: h2,
+        w: fc_w_t,
+        bias: fc_b_t,
+        out: fc,
+        rem: fc_rem,
+        m,
+        k: D,
+        n: FFN,
+        shift,
+    });
+    ops.push(Op::GeluIndex {
+        x: fc,
+        out: gelu_idx,
+        offset: 1 << 23,
+        table_len: 1 << 24,
+    });
+    ops.push(Op::Lookup {
+        idx: gelu_idx,
+        out: act,
+        table: gelu_t,
+    });
+    ops.push(Op::Projection {
+        x: act,
+        w: proj_w_t,
+        bias: proj_b_t,
+        out: proj2,
+        rem: proj2_rem,
+        m,
+        k: FFN,
+        n: D,
+        shift,
+    });
     let out = store.push(vec![]);
-    ops.push(Op::Add { a: x2, b: proj2, c: out });
+    ops.push(Op::Add {
+        a: x2,
+        b: proj2,
+        c: out,
+    });
     out
 }
 
@@ -178,7 +339,9 @@ fn main() {
     let mut x_cur = x0;
     let mut layer0_out = x0;
     for layer in 0..LAYERS {
-        x_cur = build_layer(&mut store, &mut ops, x_cur, layer, m, shift, exp_t, gelu_t, rsqrt_t, mask_t);
+        x_cur = build_layer(
+            &mut store, &mut ops, x_cur, layer, m, shift, exp_t, gelu_t, rsqrt_t, mask_t,
+        );
         if layer == 0 {
             layer0_out = x_cur;
         }
@@ -188,19 +351,45 @@ fn main() {
     let lnf_w_t = store.push(broadcast(&lnf_w, m));
     let lnf_b_t = store.push(broadcast(&lnf_b, m));
     let h_final = store.push(vec![]);
-    ops.push(Op::LayerNormCentered { x: x_cur, w: lnf_w_t, b: lnf_b_t, out: h_final, rsqrt_table: rsqrt_t, m, d: D, n_real: N_REAL });
+    ops.push(Op::LayerNormCentered {
+        x: x_cur,
+        w: lnf_w_t,
+        b: lnf_b_t,
+        out: h_final,
+        rsqrt_table: rsqrt_t,
+        m,
+        d: D,
+        n_real: N_REAL,
+    });
     let lm_w_t = store.push(lm_head_w);
     let logits = store.push(vec![]);
-    ops.push(Op::MatMul { a: h_final, b: lm_w_t, c: logits, m, k: D, n: 65536 });
+    ops.push(Op::MatMul {
+        a: h_final,
+        b: lm_w_t,
+        c: logits,
+        m,
+        k: D,
+        n: 65536,
+    });
 
     let t0 = std::time::Instant::now();
     let proof = prove_shard(&mut store, &ops, &[logits], &mut rng);
     let prove_t = t0.elapsed();
     let t1 = std::time::Instant::now();
-    assert!(verify_shard(&store, &ops, &proof), "full GPT-2 proof failed");
+    assert!(
+        verify_shard(&store, &ops, &proof),
+        "full GPT-2 proof failed"
+    );
     let verify_t = t1.elapsed();
-    println!("full GPT-2+lm_head ({} layers, m={}, {} heads, {} ops): prove {:?}, verify {:?}",
-        LAYERS, m, HEADS, ops.len(), prove_t, verify_t);
+    println!(
+        "full GPT-2+lm_head ({} layers, m={}, {} heads, {} ops): prove {:?}, verify {:?}",
+        LAYERS,
+        m,
+        HEADS,
+        ops.len(),
+        prove_t,
+        verify_t
+    );
 
     // Debug: layer0 output after the witness is computed.
     let h0 = store.get(layer0_out);
@@ -219,7 +408,9 @@ fn main() {
         let mut best_v = logits[i * 65536];
         for j in 1..50257 {
             let v = logits[i * 65536 + j];
-            if zkie_core::common::fixed_point::to_i64(v) > zkie_core::common::fixed_point::to_i64(best_v) {
+            if zkie_core::common::fixed_point::to_i64(v)
+                > zkie_core::common::fixed_point::to_i64(best_v)
+            {
                 best_v = v;
                 best = j;
             }

@@ -17,7 +17,10 @@ fn load_i32(path: &str) -> Vec<Goldilocks> {
 }
 
 fn main() {
-    let m = std::env::var("GEMMA_SEQ").ok().and_then(|s| s.parse().ok()).unwrap_or(16usize);
+    let m = std::env::var("GEMMA_SEQ")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(16usize);
     let dir = "models/gemma3/weights";
     let mut store = Store::new();
     let mut ops = Vec::new();

@@ -45,9 +45,14 @@ fn peak_rss_kb() -> u64 {
 }
 
 fn main() {
-    let m: usize = std::env::var("M").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
-    let ops_per_shard: usize =
-        std::env::var("SHARD").ok().and_then(|v| v.parse().ok()).unwrap_or(718);
+    let m: usize = std::env::var("M")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16);
+    let ops_per_shard: usize = std::env::var("SHARD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(718);
     let verify = std::env::var("VERIFY").map(|v| v == "1").unwrap_or(false);
     let dir = "models/deepseek-v2-lite/weights";
 
@@ -100,6 +105,9 @@ fn main() {
         let t2 = std::time::Instant::now();
         let ok = verify_shard_precomputed(&store, &ops[s..e], &proof);
         println!("verify shard_idx={idx} ok={ok} in {:?}", t2.elapsed());
-        assert!(ok, "shard {idx} proof FAILED to verify - the memory number above is meaningless");
+        assert!(
+            ok,
+            "shard {idx} proof FAILED to verify - the memory number above is meaningless"
+        );
     }
 }

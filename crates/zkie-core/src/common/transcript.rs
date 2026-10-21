@@ -6,7 +6,7 @@
 //! everything absorbed, so the prover cannot choose favourable points and the
 //! verifier can replay the exact same challenges from the proof.
 
-use crate::common::field::{Goldilocks, P, PrimeCharacteristicRing, PrimeField64};
+use crate::common::field::{Goldilocks, PrimeCharacteristicRing, PrimeField64, P};
 use sha2::{Digest, Sha256};
 
 /// A deterministic challenge stream over absorbed bytes.

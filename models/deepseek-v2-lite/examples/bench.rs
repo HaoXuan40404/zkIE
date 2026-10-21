@@ -39,7 +39,11 @@ fn main() {
         .unwrap_or(17usize);
     let t_commit = std::time::Instant::now();
     let batches = vertical_weights_e2e::commit_weight_batches(
-        &store, &ops, group_size, pow_bits, "deepseek-v2-lite",
+        &store,
+        &ops,
+        group_size,
+        pow_bits,
+        "deepseek-v2-lite",
     );
     let commit_t = t_commit.elapsed();
     let mut rng = XorShift64::new(0xD5EED);

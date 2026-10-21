@@ -14,14 +14,20 @@
 
 use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing, XorShift64};
 use zkie_core::common::fixed_point::{from_i64, to_i32, to_i64};
-use zkie_core::common::logup_gkr::{prove_lookup_fractional, verify_lookup_fractional, FractionalProof};
+use zkie_core::common::logup_gkr::{
+    prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
+};
 use zkie_core::common::mle;
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 
 fn round_div(a: i64, b: i64) -> i64 {
     let q = a.div_euclid(b);
     let r = a.rem_euclid(b);
-    if r * 2 >= b { q + 1 } else { q }
+    if r * 2 >= b {
+        q + 1
+    } else {
+        q
+    }
 }
 
 pub struct RoPEProof {
@@ -150,7 +156,9 @@ pub fn prove_rope(
     let two_shift = Goldilocks::from_u64(1u64 << shift);
     let half = Goldilocks::from_u64(1u64 << (shift - 1));
 
-    let r_f: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
+    let r_f: Vec<Goldilocks> = (0..n.trailing_zeros() as usize)
+        .map(|_| rng.field())
+        .collect();
     let first_terms = vec![
         (Goldilocks::ONE, vec![0usize, 1usize]),
         (neg, vec![2usize, 3usize]),
@@ -161,7 +169,9 @@ pub fn prove_rope(
     let first_mles: Vec<&[Goldilocks]> = vec![&x_f, &cos_b, &x_s, &sin_b, &out_f, &rem_f, &ones];
     let first = prove_virtual(&first_mles, &first_terms, Goldilocks::ZERO, &r_f);
 
-    let r_s: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
+    let r_s: Vec<Goldilocks> = (0..n.trailing_zeros() as usize)
+        .map(|_| rng.field())
+        .collect();
     let second_terms = vec![
         (Goldilocks::ONE, vec![0usize, 1usize]),
         (Goldilocks::ONE, vec![2usize, 3usize]),
@@ -172,12 +182,15 @@ pub fn prove_rope(
     let second_mles: Vec<&[Goldilocks]> = vec![&x_s, &cos_b, &x_f, &sin_b, &out_s, &rem_s, &ones];
     let second = prove_virtual(&second_mles, &second_terms, Goldilocks::ZERO, &r_s);
 
-    let r_out: Vec<Goldilocks> =
-        (0..out.len().trailing_zeros() as usize).map(|_| rng.field()).collect();
+    let r_out: Vec<Goldilocks> = (0..out.len().trailing_zeros() as usize)
+        .map(|_| rng.field())
+        .collect();
 
     // range-check the rounding remainders so the rounding is constrained to the
     // honest round(.. / 2^shift) value (mirrors projection.rs).
-    let table: Vec<Goldilocks> = (0..(1usize << shift)).map(|j| Goldilocks::from_u64(j as u64)).collect();
+    let table: Vec<Goldilocks> = (0..(1usize << shift))
+        .map(|j| Goldilocks::from_u64(j as u64))
+        .collect();
     let idx_f: Vec<u32> = rem_f.iter().map(|&v| to_i32(v) as u32).collect();
     let idx_s: Vec<u32> = rem_s.iter().map(|&v| to_i32(v) as u32).collect();
     let alpha_f = rng.field();
@@ -244,7 +257,13 @@ pub fn verify_rope(
         mle::eval(&rem_f, &proof.r_first),
         mle::eval(&ones, &proof.r_first),
     ];
-    if !verify_virtual(&proof.first, &first_terms, Goldilocks::ZERO, &proof.r_first, &first_fe) {
+    if !verify_virtual(
+        &proof.first,
+        &first_terms,
+        Goldilocks::ZERO,
+        &proof.r_first,
+        &first_fe,
+    ) {
         return false;
     }
 
@@ -264,14 +283,35 @@ pub fn verify_rope(
         mle::eval(&rem_s, &proof.r_second),
         mle::eval(&ones, &proof.r_second),
     ];
-    if !verify_virtual(&proof.second, &second_terms, Goldilocks::ZERO, &proof.r_second, &second_fe) {
+    if !verify_virtual(
+        &proof.second,
+        &second_terms,
+        Goldilocks::ZERO,
+        &proof.r_second,
+        &second_fe,
+    ) {
         return false;
     }
-    let table: Vec<Goldilocks> = (0..(1usize << shift)).map(|j| Goldilocks::from_u64(j as u64)).collect();
+    let table: Vec<Goldilocks> = (0..(1usize << shift))
+        .map(|j| Goldilocks::from_u64(j as u64))
+        .collect();
     let idx_f: Vec<u32> = rem_f.iter().map(|&v| to_i32(v) as u32).collect();
     let idx_s: Vec<u32> = rem_s.iter().map(|&v| to_i32(v) as u32).collect();
-    verify_lookup_fractional(&proof.frac_f, &idx_f, &rem_f, &table, proof.alpha_f, proof.beta_f)
-        && verify_lookup_fractional(&proof.frac_s, &idx_s, &rem_s, &table, proof.alpha_s, proof.beta_s)
+    verify_lookup_fractional(
+        &proof.frac_f,
+        &idx_f,
+        &rem_f,
+        &table,
+        proof.alpha_f,
+        proof.beta_f,
+    ) && verify_lookup_fractional(
+        &proof.frac_s,
+        &idx_s,
+        &rem_s,
+        &table,
+        proof.alpha_s,
+        proof.beta_s,
+    )
 }
 
 #[cfg(test)]

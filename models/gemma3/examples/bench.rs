@@ -57,9 +57,8 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(17usize);
     let t_commit = std::time::Instant::now();
-    let batches = vertical_weights_e2e::commit_weight_batches(
-        &store, &ops, group_size, pow_bits, "gemma3",
-    );
+    let batches =
+        vertical_weights_e2e::commit_weight_batches(&store, &ops, group_size, pow_bits, "gemma3");
     let commit_t = t_commit.elapsed();
     for &pps in &pps_values {
         let mut rng = XorShift64::new(0xBEEF);
@@ -72,7 +71,9 @@ fn main() {
             verify_shard_dag(&mut store, &ops, pps, &proof),
             "sharded proof failed"
         );
-        assert!(vertical_weights_e2e::verify_weight_openings(&batches, &openings));
+        assert!(vertical_weights_e2e::verify_weight_openings(
+            &batches, &openings
+        ));
         let verify_t = t1.elapsed();
 
         let lg = store.get(logits);

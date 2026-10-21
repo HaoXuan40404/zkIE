@@ -386,13 +386,8 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(17usize);
     let t_commit = std::time::Instant::now();
-    let batches = vertical_weights_e2e::commit_weight_batches(
-        &store,
-        &ops,
-        group_size,
-        pow_bits,
-        "gpt2",
-    );
+    let batches =
+        vertical_weights_e2e::commit_weight_batches(&store, &ops, group_size, pow_bits, "gpt2");
     let commit_t = t_commit.elapsed();
     for ops_per_shard in shard_configs {
         let mut rng = XorShift64::new(0xBEEF);

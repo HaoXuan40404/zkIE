@@ -37,7 +37,8 @@ use zkie_ops::compose::{forward_shard, shard_ranges, Store};
 
 fn load_i32(path: &str) -> Vec<Goldilocks> {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    bytes.chunks_exact(4)
+    bytes
+        .chunks_exact(4)
         .map(|c| from_i32(i32::from_le_bytes([c[0], c[1], c[2], c[3]])))
         .collect()
 }
@@ -52,9 +53,14 @@ fn peak_rss_kb() -> u64 {
 }
 
 fn main() {
-    let m: usize = std::env::var("M").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
-    let ops_per_shard: usize =
-        std::env::var("SHARD").ok().and_then(|v| v.parse().ok()).unwrap_or(718);
+    let m: usize = std::env::var("M")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16);
+    let ops_per_shard: usize = std::env::var("SHARD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(718);
     let mode = std::env::var("MODE").unwrap_or_else(|_| "full".into());
     let dir = "models/deepseek-v2-lite/weights";
 
@@ -62,7 +68,9 @@ fn main() {
     let mut ops = Vec::new();
     let (_x0, _logits) = build_deepseek(&mut store, &mut ops, dir, m, 16);
     let ranges = shard_ranges(ops.len(), ops_per_shard);
-    let idx: usize = std::env::var("SHARD_IDX").ok().and_then(|v| v.parse().ok())
+    let idx: usize = std::env::var("SHARD_IDX")
+        .ok()
+        .and_then(|v| v.parse().ok())
         .unwrap_or(ranges.len() - 1);
     let after_build = peak_rss_kb();
 
@@ -94,6 +102,8 @@ fn main() {
     println!(
         "mode={mode} M={m} ops={} shards={} shard_idx={idx} range={s}..{e} \
          forward={dt:?} peak_rss_kb={} after_build_kb={after_build} live_elements={live}",
-        ops.len(), ranges.len(), peak_rss_kb()
+        ops.len(),
+        ranges.len(),
+        peak_rss_kb()
     );
 }

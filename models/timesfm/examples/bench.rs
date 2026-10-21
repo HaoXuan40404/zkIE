@@ -37,9 +37,8 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(17usize);
     let t_commit = std::time::Instant::now();
-    let batches = vertical_weights_e2e::commit_weight_batches(
-        &store, &ops, group_size, pow_bits, "timesfm",
-    );
+    let batches =
+        vertical_weights_e2e::commit_weight_batches(&store, &ops, group_size, pow_bits, "timesfm");
     let commit_t = t_commit.elapsed();
     for &pps in &pps_values {
         let mut s = Store {
@@ -53,7 +52,9 @@ fn main() {
         let prove_t = t0.elapsed();
         let t1 = std::time::Instant::now();
         assert!(verify_shard_dag(&mut s, &ops, pps, &proof));
-        assert!(vertical_weights_e2e::verify_weight_openings(&batches, &openings));
+        assert!(vertical_weights_e2e::verify_weight_openings(
+            &batches, &openings
+        ));
         let verify_t = t1.elapsed();
         let total_t = (prove_t + verify_t).as_secs_f64();
         println!(

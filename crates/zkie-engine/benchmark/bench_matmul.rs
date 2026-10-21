@@ -40,7 +40,10 @@ fn main() {
     println!("matmul m={m} k={k} n={n}");
     println!("gkr_proof_field_ops={gkr_field_ops}");
     println!("halo2_rows={halo2_rows}");
-    println!("halo2_over_gkr_ratio={:.1}", halo2_rows as f64 / gkr_field_ops as f64);
+    println!(
+        "halo2_over_gkr_ratio={:.1}",
+        halo2_rows as f64 / gkr_field_ops as f64
+    );
     println!("gkr_prove_wall_secs={prove_secs:.4}");
 }
 

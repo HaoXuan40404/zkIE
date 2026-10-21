@@ -25,8 +25,14 @@ fn main() {
 
     println!("L0_q_w:   {} elems = 1024x1024 (d_pad^2)", q_w.len());
     println!("L0_q_b:   {} elems = 1024 (d_pad)", q_b.len());
-    println!("L0_fc_w:  {} elems = 1024x4096 (d_pad x ffn_pad)", fc_w.len());
-    println!("L0_proj_w:{} elems = 4096x1024 (ffn_pad x d_pad)", proj_w.len());
+    println!(
+        "L0_fc_w:  {} elems = 1024x4096 (d_pad x ffn_pad)",
+        fc_w.len()
+    );
+    println!(
+        "L0_proj_w:{} elems = 4096x1024 (ffn_pad x d_pad)",
+        proj_w.len()
+    );
     println!("L0_ln1_w: {} elems = 1024 (d_pad)", ln1_w.len());
 
     // Roundtrip the first weight value (i32 -> field -> i32).

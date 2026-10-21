@@ -27,8 +27,14 @@ fn peak_rss_kb() -> u64 {
 }
 
 fn main() {
-    let m: usize = std::env::var("M").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
-    let shard: usize = std::env::var("SHARD").ok().and_then(|v| v.parse().ok()).unwrap_or(718);
+    let m: usize = std::env::var("M")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16);
+    let shard: usize = std::env::var("SHARD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(718);
     let dir = "models/deepseek-v2-lite/weights";
     let mut store = Store::new();
     let mut ops = Vec::new();
@@ -66,7 +72,10 @@ fn main() {
     let _ = std::io::stdout().flush();
     if std::env::var("VERIFY").is_ok() {
         let t1 = std::time::Instant::now();
-        assert!(verify_shard_dag(&mut store, &ops, shard, &proof), "verify failed");
+        assert!(
+            verify_shard_dag(&mut store, &ops, shard, &proof),
+            "verify failed"
+        );
         println!("verify {:?}", t1.elapsed());
         let _ = std::io::stdout().flush();
     }

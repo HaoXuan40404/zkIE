@@ -500,9 +500,8 @@ impl Whir {
             writer.write_all(&(leaf.width as u64).to_le_bytes())?;
             writer.write_all(&(leaf.values.len() as u64).to_le_bytes())?;
             let byte_len = leaf.values.len() * std::mem::size_of::<F>();
-            let bytes = unsafe {
-                std::slice::from_raw_parts(leaf.values.as_ptr() as *const u8, byte_len)
-            };
+            let bytes =
+                unsafe { std::slice::from_raw_parts(leaf.values.as_ptr() as *const u8, byte_len) };
             writer.write_all(bytes)?;
         }
         let bytes = merkle_data.write_digest_layers();
@@ -546,8 +545,7 @@ impl Whir {
         reader.read_to_end(&mut bytes)?;
         let merkle_data =
             <MyMmcs as p3_commit::Mmcs<F>>::ProverData::<RowMajorMatrix<F>>::read_digest_layers(
-                &bytes,
-                leaves,
+                &bytes, leaves,
             );
         let tables = evals_batch
             .iter()

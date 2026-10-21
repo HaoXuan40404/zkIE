@@ -1,11 +1,11 @@
-pub mod whir;
 pub mod batch_open;
 pub mod committed;
+#[cfg(feature = "cuda")]
+pub mod cuda_buffer;
+#[cfg(feature = "cuda")]
+pub mod cuda_ffi;
 #[cfg(feature = "cuda")]
 pub mod dft_cuda;
 #[cfg(feature = "cuda")]
 pub mod merkle_cuda;
-#[cfg(feature = "cuda")]
-pub mod cuda_ffi;
-#[cfg(feature = "cuda")]
-pub mod cuda_buffer;
+pub mod whir;
