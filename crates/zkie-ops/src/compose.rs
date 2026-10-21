@@ -1765,30 +1765,10 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
             }
             (Op::GeluIndex { .. }, OpProof::GeluIndex) => {}
             (Op::StableSoftmaxIndex { .. }, OpProof::StableSoftmaxIndex) => {}
-            (
-                Op::Layernorm {
-                    x,
-                    w,
-                    b,
-                    out,
-                    rsqrt_table,
-                    m,
-                    d,
-                },
-                OpProof::Layernorm(lp),
-            ) => {
-                if !verify_layernorm_chain(
-                    lp,
-                    ws.get(*x),
-                    ws.get(*w),
-                    ws.get(*b),
-                    ws.get(*rsqrt_table),
-                    *m,
-                    *d,
-                ) {
+            (Op::Layernorm { rsqrt_table, .. }, OpProof::Layernorm(lp)) => {
+                if !verify_layernorm_chain(lp, ws.get(*rsqrt_table)) {
                     return false;
                 }
-                claims.push((*out, lp.r_out.clone(), mle::eval(ws.get(*out), &lp.r_out)));
             }
             (
                 Op::LayerNormCentered {
