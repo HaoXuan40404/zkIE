@@ -3358,6 +3358,27 @@ mod tests {
             &point,
             &opens[0]
         ));
+
+        // A wrong commitment root must fail: the opening proof is bound to the
+        // correct root, so verifying it against a different root is rejected.
+        let weights2: Vec<Vec<Goldilocks>> = (0..4)
+            .map(|_| (0..n).map(|_| rng.field()).collect())
+            .collect();
+        let refs2: Vec<&[Goldilocks]> = weights2.iter().map(|w| w.as_slice()).collect();
+        let batch2 = commit_weights_batch(&whir, &refs2);
+        let wrong_commit = WeightBatchCommit {
+            commitment: batch2.commitment,
+            protocol: batch2.protocol,
+            whir: batch2.whir,
+            num_tables: batch2.num_tables,
+        };
+        assert!(!verify_weight_batch(
+            &wrong_commit,
+            0,
+            mle::eval(&weights[0], &point),
+            &point,
+            &opens[0]
+        ));
     }
 
     #[test]
