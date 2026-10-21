@@ -989,7 +989,9 @@ dependencies = [
 name = "zkie-ops"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "p3-maybe-rayon",
  "rayon",
+ "serde",
  "zkie-core",
 ]
