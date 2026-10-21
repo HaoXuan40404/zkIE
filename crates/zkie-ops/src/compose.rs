@@ -1846,42 +1846,13 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                 ));
                 claims.push((*out, lp.r_out.clone(), mle::eval(ws.get(*out), &lp.r_out)));
             }
-            (
-                Op::RmsNorm {
-                    x,
-                    w,
-                    out,
-                    rsqrt_table,
-                    m,
-                    d,
-                    n_real,
-                },
-                OpProof::RmsNorm(p),
-            ) => {
-                if !verify_rms_norm(
-                    p,
-                    ws.get(*x),
-                    ws.get(*w),
-                    ws.get(*rsqrt_table),
-                    *m,
-                    *d,
-                    *n_real,
-                ) {
+            (Op::RmsNorm { rsqrt_table, n_real, .. }, OpProof::RmsNorm(p)) => {
+                if !verify_rms_norm(p, *n_real) {
                     return false;
                 }
-                let (_ms, s_idx, rstd_v, _out, _rem_out, _rem_lo, _rem_hi, _sum_sq, _rem_s) =
-                    rms_norm_forward(
-                        ws.get(*x),
-                        ws.get(*w),
-                        ws.get(*rsqrt_table),
-                        *m,
-                        *d,
-                        *n_real,
-                    );
-                rsqrt_idx.push(s_idx);
-                rsqrt_vals.push(rstd_v);
+                rsqrt_idx.push(p.s_index.clone());
+                rsqrt_vals.push(p.rstd_vals.clone());
                 rsqrt_table_id = Some(*rsqrt_table);
-                claims.push((*out, p.r_out.clone(), mle::eval(ws.get(*out), &p.r_out)));
             }
             (
                 Op::RoPE {

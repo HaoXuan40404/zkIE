@@ -34,6 +34,8 @@ pub struct RmsNormProof {
     pub rem_split_ch: Vec<Goldilocks>,
     pub alpha_r: Goldilocks,
     pub beta_r: Goldilocks,
+    pub rem_lo: Vec<Goldilocks>,
+    pub rem_hi: Vec<Goldilocks>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -189,28 +191,18 @@ pub fn prove_rms_norm(
         rem_split_ch,
         alpha_r,
         beta_r,
+        rem_lo,
+        rem_hi,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn verify_rms_norm(
-    proof: &RmsNormProof,
-    x: &[Goldilocks],
-    w: &[Goldilocks],
-    rsqrt_table: &[Goldilocks],
-    m: usize,
-    d: usize,
-    n_real: usize,
-) -> bool {
-    let (ms, s_index, rstd, out, rem_out, rem_lo, rem_hi, sum_sq, rem_s) =
-        rms_norm_forward(x, w, rsqrt_table, m, d, n_real);
+pub fn verify_rms_norm(proof: &RmsNormProof, n_real: usize) -> bool {
     let d_f = Goldilocks::from_u64(n_real as u64);
     let half_d = Goldilocks::from_u64((n_real / 2) as u64);
     let half32 = Goldilocks::from_u64(1u64 << 31);
     let two32 = Goldilocks::from_u64(1u64 << 32);
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
-    let ones_m: Vec<Goldilocks> = vec![Goldilocks::ONE; m];
-    let ones_md: Vec<Goldilocks> = vec![Goldilocks::ONE; m * d];
 
     if !verify_virtual(
         &proof.trunc,
@@ -222,17 +214,10 @@ pub fn verify_rms_norm(
         ],
         Goldilocks::ZERO,
         &proof.trunc_ch,
-        &[
-            mle::eval(&ms, &proof.trunc_ch),
-            mle::eval(&rem_s, &proof.trunc_ch),
-            mle::eval(&sum_sq, &proof.trunc_ch),
-            mle::eval(&ones_m, &proof.trunc_ch),
-        ],
+        &proof.trunc.final_evals,
     ) {
         return false;
     }
-    let rstd_b: Vec<Goldilocks> = (0..m * d).map(|ij| rstd[ij / d]).collect();
-    let raw: Vec<Goldilocks> = (0..m * d).map(|ij| x[ij] * rstd[ij / d] * w[ij]).collect();
     if !verify_virtual(
         &proof.out,
         &[
@@ -245,15 +230,7 @@ pub fn verify_rms_norm(
         ],
         Goldilocks::ZERO,
         &proof.r_out,
-        &[
-            mle::eval(x, &proof.r_out),
-            mle::eval(&rstd_b, &proof.r_out),
-            mle::eval(w, &proof.r_out),
-            mle::eval(&raw, &proof.r_out),
-            mle::eval(&out, &proof.r_out),
-            mle::eval(&rem_out, &proof.r_out),
-            mle::eval(&ones_md, &proof.r_out),
-        ],
+        &proof.out.final_evals,
     ) {
         return false;
     }
@@ -266,23 +243,19 @@ pub fn verify_rms_norm(
         ],
         Goldilocks::ZERO,
         &proof.rem_split_ch,
-        &[
-            mle::eval(&rem_out, &proof.rem_split_ch),
-            mle::eval(&rem_lo, &proof.rem_split_ch),
-            mle::eval(&rem_hi, &proof.rem_split_ch),
-        ],
+        &proof.rem_split.final_evals,
     ) {
         return false;
     }
     let limb_table: Vec<Goldilocks> = (0..(1usize << 16))
         .map(|j| Goldilocks::from_u64(j as u64))
         .collect();
-    let idx_lo: Vec<u32> = rem_lo.iter().map(|&v| to_i32(v) as u32).collect();
-    let idx_hi: Vec<u32> = rem_hi.iter().map(|&v| to_i32(v) as u32).collect();
+    let idx_lo: Vec<u32> = proof.rem_lo.iter().map(|&v| to_i32(v) as u32).collect();
+    let idx_hi: Vec<u32> = proof.rem_hi.iter().map(|&v| to_i32(v) as u32).collect();
     verify_lookup_fractional_batch(
         &proof.rem_range,
         &[&idx_lo, &idx_hi],
-        &[&rem_lo, &rem_hi],
+        &[&proof.rem_lo, &proof.rem_hi],
         &limb_table,
         proof.alpha_r,
         proof.beta_r,
@@ -305,7 +278,7 @@ mod tests {
         let (ms, _s_index, _rstd, out, _rem_out, _rem_lo, _rem_hi, _sum_sq, _rem_s) =
             rms_norm_forward(&x, &w, &rsqrt_table, m, d, n_real);
         let proof = prove_rms_norm(&x, &w, &rsqrt_table, m, d, n_real, &mut rng);
-        assert!(verify_rms_norm(&proof, &x, &w, &rsqrt_table, m, d, n_real));
+        assert!(verify_rms_norm(&proof, n_real));
         // The rsqrt lookup is deferred to the shard level; verify it through the
         // batch primitive here to keep the roundtrip test complete.
         let mut rng2 = XorShift64::new(0xABCD_EF01);
