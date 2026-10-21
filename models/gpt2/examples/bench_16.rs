@@ -6,7 +6,7 @@ use std::fs;
 
 use zkie_core::common::field::{Goldilocks, XorShift64};
 use zkie_core::common::fixed_point::{from_i32, to_i32, to_i64};
-use zkie_ops::compose::{causal_mask, prove_shard_dag, verify_shard_dag, Op, Store};
+use zkie_ops::compose::{causal_mask, prove_shard_dag, verify_shard_dag_bytes, Op, Store};
 
 const D: usize = 1024;
 const FFN: usize = 4096;
@@ -376,7 +376,7 @@ fn main() {
         let prove_t = t0.elapsed();
         let t1 = std::time::Instant::now();
         assert!(
-            verify_shard_dag(&store.owned_slices(), &ops, ops_per_shard, &proof),
+            verify_shard_dag_bytes(&bincode::serialize(&proof).unwrap(), &store.owned_slices(), &ops, ops_per_shard),
             "sharded proof failed"
         );
         let verify_t = t1.elapsed();
