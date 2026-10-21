@@ -1736,18 +1736,10 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                     return false;
                 }
             }
-            (Op::Add { a, b, c }, OpProof::Add(vp, r)) => {
-                let fe = vec![
-                    mle::eval(ws.get(*a), r),
-                    mle::eval(ws.get(*b), r),
-                    mle::eval(ws.get(*c), r),
-                ];
-                if !verify_virtual(vp, &add_terms, Goldilocks::ZERO, r, &fe) {
+            (Op::Add { .. }, OpProof::Add(vp, r)) => {
+                if !verify_virtual(vp, &add_terms, Goldilocks::ZERO, r, &vp.final_evals) {
                     return false;
                 }
-                claims.push((*a, r.clone(), mle::eval(ws.get(*a), r)));
-                claims.push((*b, r.clone(), mle::eval(ws.get(*b), r)));
-                claims.push((*c, r.clone(), mle::eval(ws.get(*c), r)));
             }
             (Op::Lookup { idx, out, table }, OpProof::Lookup(fp, alpha, beta)) => {
                 if !verify_lookup_fractional(
