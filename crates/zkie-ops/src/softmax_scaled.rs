@@ -34,6 +34,9 @@ pub struct SoftmaxRoundedProof {
     pub r_sum: Vec<Goldilocks>,
     pub sum_ch: Vec<Goldilocks>,
     pub r_scale: Vec<Goldilocks>,
+    pub indices: Vec<u32>,
+    pub e: Vec<Goldilocks>,
+    pub claimed: Goldilocks,
 }
 
 pub fn prove_softmax_rounded(
@@ -60,10 +63,11 @@ pub fn prove_softmax_rounded(
     let sum_ch: Vec<Goldilocks> = (0..(m * n).trailing_zeros() as usize)
         .map(|_| rng.field())
         .collect();
+    let claimed = mle::eval(&sum, &r_sum);
     let row_sum = prove_virtual(
         &[&eq_broadcast, e],
         &[(Goldilocks::ONE, vec![0usize, 1usize])],
-        mle::eval(&sum, &r_sum),
+        claimed,
         &sum_ch,
     );
 
@@ -100,45 +104,22 @@ pub fn prove_softmax_rounded(
         r_sum,
         sum_ch,
         r_scale,
+        indices: indices.to_vec(),
+        e: e.to_vec(),
+        claimed,
     }
 }
 
-pub fn verify_softmax_rounded(
-    proof: &SoftmaxRoundedProof,
-    indices: &[u32],
-    e: &[Goldilocks],
-    out: &[Goldilocks],
-    table: &[Goldilocks],
-    m: usize,
-    n: usize,
-) -> bool {
-    let sum: Vec<Goldilocks> = (0..m)
-        .map(|i| (0..n).fold(Goldilocks::ZERO, |a, j| a + e[i * n + j]))
-        .collect();
-    let eq_i = mle::eq_evals(&proof.r_sum);
-    let eq_broadcast: Vec<Goldilocks> = (0..m * n).map(|idx| eq_i[idx / n]).collect();
+pub fn verify_softmax_rounded(proof: &SoftmaxRoundedProof) -> bool {
     if !verify_virtual(
         &proof.row_sum,
         &[(Goldilocks::ONE, vec![0usize, 1usize])],
-        mle::eval(&sum, &proof.r_sum),
+        proof.claimed,
         &proof.sum_ch,
-        &[
-            mle::eval(&eq_broadcast, &proof.sum_ch),
-            mle::eval(e, &proof.sum_ch),
-        ],
+        &proof.row_sum.final_evals,
     ) {
         return false;
     }
-    let sum_broadcast: Vec<Goldilocks> = (0..m * n).map(|idx| sum[idx / n]).collect();
-    let rem: Vec<Goldilocks> = (0..m * n)
-        .map(|ij| {
-            from_i64(
-                zkie_core::common::fixed_point::to_i64(e[ij]) * (1i64 << 16)
-                    - zkie_core::common::fixed_point::to_i64(out[ij])
-                        * zkie_core::common::fixed_point::to_i64(sum_broadcast[ij]),
-            )
-        })
-        .collect();
     let two16 = Goldilocks::from_u64(1u64 << 16);
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
     verify_virtual(
@@ -150,12 +131,7 @@ pub fn verify_softmax_rounded(
         ],
         Goldilocks::ZERO,
         &proof.r_scale,
-        &[
-            mle::eval(out, &proof.r_scale),
-            mle::eval(e, &proof.r_scale),
-            mle::eval(&sum_broadcast, &proof.r_scale),
-            mle::eval(&rem, &proof.r_scale),
-        ],
+        &proof.rescale.final_evals,
     )
 }
 

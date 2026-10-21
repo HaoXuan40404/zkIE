@@ -1753,36 +1753,13 @@ pub fn verify_shard_precomputed(store: &Store, ops: &[Op], proof: &OpShardProof)
                     return false;
                 }
             }
-            (
-                Op::Softmax {
-                    idx,
-                    e,
-                    out,
-                    table,
-                    m,
-                    n,
-                },
-                OpProof::Softmax(sp),
-            ) => {
-                if !verify_softmax_rounded(
-                    sp,
-                    &ws.idx[*idx],
-                    ws.get(*e),
-                    ws.get(*out),
-                    ws.get(*table),
-                    *m,
-                    *n,
-                ) {
+            (Op::Softmax { table, .. }, OpProof::Softmax(sp)) => {
+                if !verify_softmax_rounded(sp) {
                     return false;
                 }
-                softmax_idx.push(ws.idx[*idx].clone());
-                softmax_vals.push(ws.get(*e).to_vec());
+                softmax_idx.push(sp.indices.clone());
+                softmax_vals.push(sp.e.clone());
                 softmax_table_id = Some(*table);
-                claims.push((
-                    *out,
-                    sp.r_scale.clone(),
-                    mle::eval(ws.get(*out), &sp.r_scale),
-                ));
             }
             (Op::SoftmaxIndex { .. }, OpProof::SoftmaxIndex) => {
                 // No proof: the verifier recomputes `idx = softmax_index(scores)`.
