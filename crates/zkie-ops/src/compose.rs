@@ -2206,10 +2206,10 @@ pub fn prove_committed_shard_dag(
     // Commit weights (grouped by size); open each weight claim at its claim
     // point, then strip the prover's Merkle data from the proof.
     let weight_tensors = collect_weight_tensors(ops);
-    let mut by_size: std::collections::BTreeMap<usize, Vec<(T, &[Goldilocks])>> =
+    let mut by_size: std::collections::BTreeMap<usize, Vec<(T, Vec<Goldilocks>)>> =
         std::collections::BTreeMap::new();
     for &t in &weight_tensors {
-        let v = store.get(t);
+        let v = store.materialize(t).into_owned();
         by_size.entry(v.len()).or_default().push((t, v));
     }
     let mut weight_batch_ctxs: Vec<zkie_core::pcs::committed::BatchCtx> = Vec::new();
@@ -2218,7 +2218,7 @@ pub fn prove_committed_shard_dag(
         std::collections::BTreeMap::new();
     for (len, group) in by_size {
         let whir = zkie_core::pcs::whir::Whir::new_testing(len.trailing_zeros() as usize);
-        let refs: Vec<&[Goldilocks]> = group.iter().map(|(_, v)| *v).collect();
+        let refs: Vec<&[Goldilocks]> = group.iter().map(|(_, v)| v.as_slice()).collect();
         let batch = commit_weights_batch(&whir, &refs);
         let bi = weight_batch_ctxs.len();
         for (i, (t, _)) in group.iter().enumerate() {
