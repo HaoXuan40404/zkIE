@@ -10,6 +10,7 @@ use crate::common::field::{Goldilocks, P, PrimeCharacteristicRing, PrimeField64}
 use sha2::{Digest, Sha256};
 
 /// A deterministic challenge stream over absorbed bytes.
+#[derive(Clone)]
 pub struct Transcript {
     state: [u8; 32],
     counter: u64,
@@ -66,6 +67,17 @@ impl Transcript {
     pub fn field_vec(&mut self, n: usize) -> Vec<Goldilocks> {
         (0..n).map(|_| self.field()).collect()
     }
+
+    /// Sample a raw `u64` (no rejection sampling); used for non-challenge
+    /// randomness that only needs to be deterministic.
+    pub fn next_u64(&mut self) -> u64 {
+        let mut h = Sha256::new();
+        h.update(self.state);
+        h.update(self.counter.to_le_bytes());
+        self.counter = self.counter.wrapping_add(1);
+        let digest: [u8; 32] = h.finalize().into();
+        u64::from_le_bytes(digest[..8].try_into().unwrap())
+    }
 }
 
 #[cfg(test)]
@@ -97,5 +109,13 @@ mod tests {
         for _ in 0..1000 {
             assert!(t.field().as_canonical_u64() < P);
         }
+    }
+}
+impl crate::common::field::ChallengeSource for Transcript {
+    fn field(&mut self) -> Goldilocks {
+        Transcript::field(self)
+    }
+    fn next_u64(&mut self) -> u64 {
+        Transcript::next_u64(self)
     }
 }
