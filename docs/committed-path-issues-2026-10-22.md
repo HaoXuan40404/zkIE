@@ -244,11 +244,13 @@ GPT-2 padding fixed: the padded vocab columns are masked to -(1<<26) after the
 right-shift (Scale shift 13), and the Argmax range-check is 27 bits. The proven
 index now matches the post-hoc argmax (n_mismatch=0).
 
-Remaining:
-- Real generation is now written in extract_gpt2.py (prompt -> greedy
-  autoregressive response on the quantized ONNX weights, exports tokens/
-  pos_emb/gt); running it needs onnx + onnxruntime + transformers on a machine
-  that has them (the test box does not).
-- Gemma 3 / DeepSeek reuse: wire tokens->wte lookup + Argmax + shift into each
-  builder (Gemma uses RoPE, DeepSeek MLA; the Argmax/verify_sequence_shift
-  primitives stay the same).
+Gemma 3 and DeepSeek-V2-Lite builders are also wired for the same
+tokens->wte lookup + Argmax + shift path (Gemma VOCAB is 2^18 so no padding mask;
+DeepSeek vocab 102400->131072 is masked). Both compile.
+
+Remaining (all data-generation, blocked on onnx/tokenizer not present on the
+test box):
+- Run extract_gpt2.py / extract_gemma3.py / extract_deepseek.py on a machine
+  with onnx+onnxruntime+transformers to emit tokens_i32.bin (and gt) for each
+  model, then run each model's committed bench end to end and confirm the
+  sequence_shift_ok becomes true for a real prompt+response.
