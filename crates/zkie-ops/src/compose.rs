@@ -4012,6 +4012,116 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn op_shard_moe_with_padding_roundtrip() {
+        use crate::scatter::scatter_forward;
+
+        let mut rng = XorShift64::new(0x3232);
+        // n=8 experts, k=6 top-k, m=3 -> S=18 -> S_pad=32 (forces padding)
+        let (m, n, h, p) = (3usize, 8usize, 4usize, 2usize);
+        let k_top = 6usize;
+        let s = m * k_top; // 18
+        let s_pad = s.next_power_of_two(); // 32
+
+        let mut sel = vec![Goldilocks::ZERO; m * n];
+        for t in 0..m {
+            for e in 0..k_top {
+                sel[t * n + ((t + e) % n)] = Goldilocks::ONE;
+            }
+        }
+        let (token_id, expert_of) = scatter_forward(&sel, m, n);
+        assert_eq!(token_id.len(), s);
+
+        let gate_mn: Vec<Goldilocks> = (0..m * n)
+            .map(|i| Goldilocks::from_u64((i as u64 % 3) + 1))
+            .collect();
+
+        let mut store = Store::new();
+        let x_t = store.push(
+            (0..m * h)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let w_all_t = store.push(
+            (0..n * h * p)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let gate_t = store.push(gate_mn.clone());
+        let sel_t = store.push(sel.clone());
+        let token_id_t = store.push_idx(token_id.clone());
+        let expert_of_t = store.push_idx(expert_of.clone());
+
+        // pad token_id / expert_of to s_pad
+        let token_id_pad = store.push_idx(vec![]);
+        let expert_of_pad = store.push_idx(vec![]);
+
+        // seg gather + mask zeroing
+        let idx_seg = store.push_idx(vec![]);
+        let seg = store.push(vec![]);
+        let mut mask = vec![Goldilocks::ZERO; s_pad];
+        for i in 0..s {
+            mask[i] = Goldilocks::ONE;
+        }
+        let mask_t = store.push(mask);
+        let seg_z = store.push(vec![]);
+
+        // weight gather
+        let idx_w = store.push_idx(vec![]);
+        let w_g = store.push(vec![]);
+        let g = store.push(vec![]);
+
+        // gate gather
+        let idx_gate = store.push_idx(vec![]);
+        let gate_pos = store.push(vec![]);
+        let out = store.push(vec![]);
+
+        let ops = vec![
+            Op::Scatter {
+                sel: sel_t,
+                token_id: token_id_t,
+                expert_of: expert_of_t,
+                m,
+                n,
+            },
+            Op::PadIdx { base: token_id_t, out: token_id_pad, len: s_pad },
+            Op::PadIdx { base: expert_of_t, out: expert_of_pad, len: s_pad },
+            Op::IdxBroadcast { base: token_id_pad, out: idx_seg, b: h },
+            Op::Lookup { idx: idx_seg, out: seg, table: x_t },
+            Op::BroadcastScale { x: seg, scale: mask_t, out: seg_z, h },
+            Op::IdxBroadcast { base: expert_of_pad, out: idx_w, b: h * p },
+            Op::Lookup { idx: idx_w, out: w_g, table: w_all_t },
+            Op::BatchedMatMul { a: seg_z, w: w_g, c: g, s: s_pad, k: h, n: p },
+            Op::CombineIdx { a: token_id_pad, b: expert_of_pad, out: idx_gate, scale: n },
+            Op::Lookup { idx: idx_gate, out: gate_pos, table: gate_t },
+            Op::Gather { weighted: g, token_id: token_id_pad, gate: gate_pos, out, m, h: p },
+        ];
+
+        let proof = prove_shard(&mut store, &ops, &[out], &mut rng);
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
+
+        // dense reference (only real (t,e) pairs contribute)
+        let mut reference = vec![Goldilocks::ZERO; m * p];
+        for t in 0..m {
+            for e in 0..n {
+                if sel[t * n + e] == Goldilocks::ONE {
+                    for j in 0..p {
+                        let mut acc = Goldilocks::ZERO;
+                        for d in 0..h {
+                            acc = acc
+                                + store.get(x_t)[t * h + d] * store.get(w_all_t)[e * h * p + d * p + j];
+                        }
+                        reference[t * p + j] =
+                            reference[t * p + j] + acc * gate_mn[t * n + e];
+                    }
+                }
+            }
+        }
+        assert_eq!(store.get(out), reference.as_slice());
+    }
+
+
     #[test]
     fn op_shard_transpose_matmul_roundtrip() {
         // scores = Q @ K^T  (the core of attention): transpose K, then matmul.
