@@ -220,3 +220,32 @@ Notes:
   `_whir` placeholder (boundaries build their own per-tensor Whir).
 - Lookup tables (rsqrt/exp/gelu) are trusted public inputs, not committed
   (allowed fallback in the store-free plan).
+
+## Sequence certification (2026-10-22, one-pass argmax + shift)
+
+Started the DeepProve-style one-pass sequence certification: prove the whole
+[prompt + response] in one forward and certify every position's argmax, then
+bind the sequence via a verifier-side shift check.
+
+Done (committed):
+- Generic `Argmax` op (top-1, n-position) in zkie-ops: reuses TopKSelect(k=1)
+  and binds the public index via `sel[i][t[i]] == 1`; the d1/d2 range-check
+  table is parameterized (`range_bits`) and computed with true i64 differences.
+- GPT-2 in-proof embedding: `tokens -> Lookup(lm_head) -> +pos_emb`.
+- GPT-2 argmax wiring: `logits -> Scale(shift 13) -> Argmax -> t` (the shift
+  bounds the range check; right-shift is monotone so argmax is ~preserved).
+- `CommittedShardDagProof` carries public `tokens` / `argmax_t`; added
+  `verify_sequence_shift(tokens, argmax_t, prompt)` verifier-side check.
+
+GPT-2 seq=512 end-to-end (committed path): commit 16.9s / prove 84.6s /
+verify 33.3s / argmax 511/512 / proof 2.55GB / rss 38GB.
+
+Remaining:
+- GPT-2 vocab padding (50257 -> 65536) has zero logits above the (negative)
+  real-vocab logits, so the argmax over the padded vocab can pick a padding
+  column. Fix = quantize to ~12-bit + mask the padding (as DeepProve does).
+- Real prompt + autoregressive generation (extract_gpt2.py exports the new
+  tokens/pos_emb but generation needs onnx + a tokenizer on a machine that has
+  them).
+- Gemma 3 / DeepSeek reuse (each swaps embedding/position encoding; Argmax +
+  shift stay the same).

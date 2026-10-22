@@ -75,6 +75,11 @@ def main():
     pos_emb = wpe[:SEQ]  # [SEQ, 768]
     hidden = token_emb + pos_emb  # [SEQ, 768]
     save("embedding_i32.bin", pad2(q(hidden), SEQ, H_PAD))
+    # Sequence-cert inputs: the token ids (public) and the input-independent
+    # position embedding (fixed table). The token embedding wte is tied with
+    # lm_head, so the prover reuses lm_head_w_i32.bin via a transposed gather.
+    save("tokens_i32.bin", input_ids[0].astype(np.int32))
+    save("pos_emb_i32.bin", pad2(q(pos_emb), SEQ, H_PAD))
 
     # causal mask (additive, -2^21 on strictly-upper triangle)
     mask = np.triu(np.full((SEQ, SEQ), -(1 << 30)), k=1).astype(np.int32)
