@@ -953,6 +953,7 @@ dependencies = [
 name = "zkie-models-deepseek-v2-lite"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "zkie-core",
  "zkie-engine",
  "zkie-ops",
