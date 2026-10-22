@@ -2184,6 +2184,11 @@ pub fn commit_model_weights(
     ops: &[Op],
     cache_dir: &str,
 ) -> Vec<CachedWeightBatch> {
+    // Borrowed from feature/batch-pcs: 90-bit security + pow_bits=17 (enough for
+    // packed codewords up to 2^26), instead of the low-security testing params.
+    const SECURITY: usize = 90;
+    const POW_BITS: usize = 17;
+
     let weight_tensors = collect_weight_tensors(ops);
     let mut by_size: std::collections::BTreeMap<usize, Vec<(T, Vec<Goldilocks>)>> =
         std::collections::BTreeMap::new();
@@ -2196,32 +2201,42 @@ pub fn commit_model_weights(
     let mut batches = Vec::new();
     for (len, group) in by_size {
         let arity = len.trailing_zeros() as usize;
-        let refs: Vec<&[Goldilocks]> = group.iter().map(|(_, v)| v.as_slice()).collect();
-        let base_whir = zkie_core::pcs::whir::Whir::new_testing(arity);
-        let (commitment, prover_data, _protocol, batch_whir) = base_whir.commit_batch(&refs);
-        let num_vars = batch_whir.num_variables();
-        let num_tables = group.len();
-        let table_ids: Vec<T> = group.iter().map(|(t, _)| *t).collect();
-        let cache_path = std::path::PathBuf::from(cache_dir).join(format!(
-            "weight-a{arity}-g{}.bin",
-            batches.len()
-        ));
-        let file = std::fs::File::create(&cache_path).expect("create weight cache");
-        let mut writer = std::io::BufWriter::new(file);
-        bincode::serialize_into(&mut writer, &commitment).expect("write cache commitment");
-        zkie_core::pcs::whir::Whir::serialize_batch_prover_data_into(prover_data, &mut writer)
-            .expect("write cache prover data");
-        std::io::Write::flush(&mut writer).expect("flush weight cache");
-        batches.push(CachedWeightBatch {
-            commitment,
-            arity,
-            num_tables,
-            num_vars,
-            security: 32,
-            pow_bits: 10,
-            table_ids,
-            cache_path,
-        });
+        // Horizontal merge: pack same-arity weights into groups that fit the
+        // WHIR PoW budget (num_vars = arity + log2(group_size) <= 26).
+        let eff_group_size = if arity <= 26 {
+            (1usize << (26 - arity)).max(1)
+        } else {
+            1
+        };
+        for ids in group.chunks(eff_group_size) {
+            let refs: Vec<&[Goldilocks]> = ids.iter().map(|(_, v)| v.as_slice()).collect();
+            let base_whir = zkie_core::pcs::whir::Whir::with_params(arity, SECURITY, POW_BITS);
+            let (commitment, prover_data, _protocol, batch_whir) =
+                base_whir.commit_batch(&refs);
+            let num_vars = batch_whir.num_variables();
+            let num_tables = ids.len();
+            let table_ids: Vec<T> = ids.iter().map(|(t, _)| *t).collect();
+            let cache_path = std::path::PathBuf::from(cache_dir).join(format!(
+                "weight-a{arity}-g{}.bin",
+                batches.len()
+            ));
+            let file = std::fs::File::create(&cache_path).expect("create weight cache");
+            let mut writer = std::io::BufWriter::new(file);
+            bincode::serialize_into(&mut writer, &commitment).expect("write cache commitment");
+            zkie_core::pcs::whir::Whir::serialize_batch_prover_data_into(prover_data, &mut writer)
+                .expect("write cache prover data");
+            std::io::Write::flush(&mut writer).expect("flush weight cache");
+            batches.push(CachedWeightBatch {
+                commitment,
+                arity,
+                num_tables,
+                num_vars,
+                security: SECURITY,
+                pow_bits: POW_BITS,
+                table_ids,
+                cache_path,
+            });
+        }
     }
     batches
 }

@@ -1,47 +1,55 @@
 # Committed-path issues (store-free verification follow-up)
 
 Branch `feature/verify-no-forward`. The committed shard-dag path
-(`prove_committed_shard_dag` / `verify_committed_shard_dag`) is now root-only and
-serialized (P3/P4), and the weight-commit primitive (`commit_weights_batch`) that
-already existed on the old `feature/batch-pcs` was finally wired into the shard-dag
-flow. Wiring it to a real model exposed the following. These are follow-ups, not
-part of the core store-free deliverable.
+(`prove_committed_shard_dag` / `verify_committed_shard_dag`) is root-only,
+serialized (P3/P4), and the weight commitment is now split into a one-time
+`commit_model_weights` (commit + cache) phase plus a prove phase that only
+restores prover data from cache (no re-commit).
 
-## 1. Full-weight WHIR commitment is the bottleneck (prove side)
+## Resolved
 
-`prove_committed_shard_dag` now commits every weight tensor (grouped by size). On
-GPT-2 seq16 this did not finish in ~9 min; the dominant cost is `lm_head`
-(2^26 elements): RS encoding + FFT + Merkle tree. This is the same WHIR-overhead
-problem as before, now exercised on real weights.
+1. **`OpeningProtocol` / `Whir` not serde** — `Whir` is serialized as
+   `(num_variables, security_level, pow_bits)` and reconstructed; the opening
+   protocol is rebuilt from the tensor arity.
+2. **mmap weight `Store::get` panic** — `commit_model_weights` uses
+   `store.materialize(t).into_owned()`.
+3. **Weight commitment used `new_testing` (32-bit)** — now `Whir::with_params(
+   arity, 90, pow_bits=17)` plus horizontal merge, borrowed from
+   `feature/batch-pcs` (`docs/vertical-batching-2026-10-21.md`).
 
-## 2. p3 `OpeningProtocol` / `Whir` are not serde
+## Borrowed from `feature/batch-pcs` (already absorbed)
 
-`OpeningProtocol` (p3-sumcheck) has no `Serialize`/`Deserialize` and does not
-expose its point schedule; `Whir` contains `Cell`. Worked around by storing
-`(num_variables, security_level, pow_bits)` for `Whir` and reconstructing the
-opening protocol from the tensor arity via `Whir::opening_protocol`.
+- 90-bit security + `pow_bits=17`.
+- Horizontal merge: pack same-arity weights into groups sized
+  `1 << (26 - arity)` so `num_vars <= 26` stays within the PoW budget.
+- Lazy opening (restore one group's Merkle tree at a time) and bulk POD
+  serialization of prover data (both already in the cache path).
 
-## 3. mmap weight tensors panic on `Store::get` (prove side)
+## Cannot change without a decision (recorded, not yet acted on)
 
-`collect_weight_tensors` read weights with `store.get(t)`, which panics on
-mmap-backed tensors (`lm_head`). Fixed with `store.materialize(t).into_owned()`.
-
-## 4. Boundary `Whir` num_variables must match exactly (prove side)
-
-`prove_committed_shard_dag` commits every boundary tensor with the single passed
-`whir`; p3-whir's adapter asserts the witness arity equals the configured
-`num_variables` (e.g. arity 14 vs configured 16 panics). The committed path
-therefore only works when all boundary tensors share one size.
-
-## 5. Weight commitment uses `new_testing` (low security)
-
-Weight batches are committed with `Whir::new_testing(len.trailing_zeros())`. Real
-security parameters hit `PowBitsExceedBudget` for large tensors (2^26), the
-pre-existing pow-budget issue.
+1. **Full vs partial weight commitment.** `feature/batch-pcs` commits only
+   `Op::Projection { w }` (q/k/v/o_proj/fc/proj), skipping `Op::MatMul { b }`
+   (`lm_head`, 2^26) and biases — that is why its commit is ~7s while a full
+   commit of the `lm_head` is minutes. Full store-free soundness wants the
+   `lm_head` committed too, but that keeps the one-time commit expensive.
+   Decision needed: commit only projection weights (fast, `lm_head` plaintext)
+   or commit everything (slow once, complete).
+2. **Boundary `Whir` num_variables must match exactly.** The committed path
+   commits every boundary tensor with a single `whir`; p3-whir's adapter asserts
+   arity == configured num_variables, so it only works when all boundary tensors
+   share one size. Unrelated to weight commitment; not addressed by
+   `feature/batch-pcs`.
+3. **Affine bias committed but never opened.** `collect_weight_tensors` still
+   collects the projection bias, but the Projection op only claims x/w/out (not
+   bias), so a bias group has no opening (currently skipped as `proof: None`).
+   If we keep committing biases this gap stays; `feature/batch-pcs` sidesteps it
+   by not committing biases at all.
 
 ## Status
 
 Store-free verification (no forward re-run) is done and measured on the plain
-path. The committed (root-only) path is implemented and unit-tested (tamper /
-wrong-root / serialization roundtrip), but its real-model prove cost is
-WHIR-bound and not yet measured end-to-end.
+path. The committed (root-only) path is implemented, unit-tested (tamper /
+wrong-root / serialization roundtrip, commit -> cache -> restore -> open), with
+90-bit weight commitments + horizontal merge. Real-model end-to-end timing for
+the committed path is still to be measured; first-run commit is dominated by the
+`lm_head` if it is committed (see "Cannot change" #1).

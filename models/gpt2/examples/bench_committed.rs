@@ -42,7 +42,7 @@ fn main() {
     let mut rng = XorShift64::new(0xBEEF);
 
     let t0 = std::time::Instant::now();
-    let cached = commit_model_weights(&store, &ops, "/tmp/zkie-weight-cache");
+    let cached = commit_model_weights(&store, &ops, "/data/jimmyshi/zkie-cache/gpt2-model-batches-v2");
     let proof = prove_committed_shard_dag(&mut store, &ops, 176, &whir, &cached, &mut rng);
     let prove_t = t0.elapsed();
 
