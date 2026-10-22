@@ -1445,6 +1445,7 @@ pub fn prove_shard_precomputed(
                 weight_pt.extend_from_slice(&p.ch);
                 claims.push((w, weight_pt.clone(), mle::eval(wv.as_ref(), &weight_pt)));
                 claims.push((out, p.pt.clone(), mle::eval(store.get(out), &p.pt)));
+                claims.push((bias, p.pt.clone(), p.affine.final_evals[4]));
                 op_proofs.push(OpProof::Projection(p));
             }
             Op::Add { a, b, c } => {
