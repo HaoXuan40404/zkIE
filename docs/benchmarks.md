@@ -468,3 +468,22 @@ path above (GPT-2 512 verify 19.4 s -> 6.3 s; Gemma 3 512 verify 35.7 s ->
 improved on this branch via batch LogUp / batch opening (GPT-2 512 prove
 47.8 s -> 26.5 s; Gemma 3 512 prove 73.0 s -> 40.5 s). Peak RSS for Gemma 3
 rose (~25.6 -> ~37.1 GB at seq=16) and is tracked as a follow-up.
+
+## DeepSeek-V2-Lite MoE (expert-major) (2026-10-23)
+
+The MoE FFN is rewritten from dense (all 64 routed experts computed over every
+token, then `ScaleGate`-masked) to expert-major: `scatter -> per-expert dense
+segments -> weighted gather`, cutting the proof domain from ~64*m to ~6*m
+(top-6). Per-position expert weights go through a streaming `GatherMatMul`
+(eq-selector sumcheck + linear-combination binding over N_ROUTED experts), so
+the S x H x MOE_PAD weight gather is never materialized.
+
+Release build, 64-thread CPU. argmax at seq=512 is 510/512 (two near-ties in
+the fixed-point logits; the argmax near-tie range-decomposition is not yet
+wired for DeepSeek, matching the pre-existing 510/512 reference).
+
+| model | seq | shards | prove | verify | argmax | peak RSS |
+| --- | --- | --- | --- | --- | --- | --- |
+| DeepSeek-V2-Lite | 16 | 12 | 322.8 s | 55.6 s | 16/16 | ~141 GB |
+| DeepSeek-V2-Lite | 512 | 12 | 5575 s | - | 510/512 | ~199 GB |
+
