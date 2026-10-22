@@ -297,3 +297,103 @@ mod tests {
         assert!(!verify_topk(&proof, k));
     }
 }
+
+
+/// Argmax (top-1) per row of an m x n matrix. Reuses TopKSelect's range/one-hot
+/// proof with k=1, and binds the public index vector `out` to the one-hot `sel`
+/// (checking sel[i][out[i]] == 1 for every row).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ArgmaxProof {
+    pub topk: TopKSelectProof,
+    pub out: Vec<u32>,
+}
+
+/// `(thr, sel, gate, d1, d2, out)`.
+pub fn argmax_forward(
+    x: &[Goldilocks],
+    m: usize,
+    n: usize,
+) -> (
+    Vec<Goldilocks>,
+    Vec<Goldilocks>,
+    Vec<Goldilocks>,
+    Vec<Goldilocks>,
+    Vec<Goldilocks>,
+    Vec<u32>,
+) {
+    let (thr, sel, gate, d1, d2) = topk_forward(x, m, n, 1);
+    let mut out = vec![0u32; m];
+    for i in 0..m {
+        let mut best = 0usize;
+        for j in 1..n {
+            if to_i64(x[i * n + j]) > to_i64(x[i * n + best]) {
+                best = j;
+            }
+        }
+        out[i] = best as u32;
+    }
+    (thr, sel, gate, d1, d2, out)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prove_argmax(
+    x: &[Goldilocks],
+    sel: &[Goldilocks],
+    thr: &[Goldilocks],
+    gate: &[Goldilocks],
+    d1: &[Goldilocks],
+    d2: &[Goldilocks],
+    out: &[u32],
+    m: usize,
+    n: usize,
+    rng: &mut impl ChallengeSource,
+) -> ArgmaxProof {
+    let topk = prove_topk(x, sel, thr, gate, d1, d2, m, n, 1, rng);
+    ArgmaxProof {
+        topk,
+        out: out.to_vec(),
+    }
+}
+
+pub fn verify_argmax(proof: &ArgmaxProof, m: usize, n: usize) -> bool {
+    if !verify_topk(&proof.topk, 1) {
+        return false;
+    }
+    for i in 0..m {
+        let j = proof.out[i] as usize;
+        if j >= n || proof.topk.sel[i * n + j] != Goldilocks::ONE {
+            return false;
+        }
+    }
+    true
+}
+
+
+#[cfg(test)]
+mod argmax_tests {
+    use super::*;
+
+    #[test]
+    fn argmax_roundtrip() {
+        let mut rng = XorShift64::new(0x9999);
+        let (m, n) = (4usize, 8usize);
+        let x: Vec<Goldilocks> = (0..m * n).map(|i| from_i64((i as i64 % 53) - 26)).collect();
+        let (thr, sel, gate, d1, d2, out) = argmax_forward(&x, m, n);
+        for i in 0..m {
+            let mut best = 0usize;
+            for j in 1..n {
+                if to_i64(x[i * n + j]) > to_i64(x[i * n + best]) {
+                    best = j;
+                }
+            }
+            assert_eq!(out[i] as usize, best);
+            assert_eq!(sel[i * n + best], Goldilocks::ONE);
+        }
+        let proof = prove_argmax(&x, &sel, &thr, &gate, &d1, &d2, &out, m, n, &mut rng);
+        assert!(verify_argmax(&proof, m, n));
+        // corrupt out -> index binding must fail
+        let mut bad = proof;
+        bad.out[0] = (bad.out[0] + 1) % n as u32;
+        assert!(!verify_argmax(&bad, m, n));
+    }
+}

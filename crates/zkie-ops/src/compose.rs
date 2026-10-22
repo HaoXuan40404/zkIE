@@ -21,7 +21,7 @@ use crate::projection::{prove_projection, verify_projection, ProjectionProof};
 use crate::rms_norm::{prove_rms_norm, rms_norm_forward, verify_rms_norm, RmsNormProof};
 use crate::rope::{prove_rope, rope_forward, verify_rope, RoPEProof};
 use crate::softmax_scaled::{prove_softmax_rounded, verify_softmax_rounded, SoftmaxRoundedProof};
-use crate::topk::{prove_topk, topk_forward, verify_topk, TopKSelectProof};
+use crate::topk::{argmax_forward, prove_argmax, prove_topk, topk_forward, verify_argmax, verify_topk, ArgmaxProof, TopKSelectProof};
 use rayon::prelude::*;
 use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i64};
@@ -699,6 +699,17 @@ pub enum Op {
         n: usize,
         k: usize,
     },
+    Argmax {
+        x: T,
+        sel: T,
+        thr: T,
+        gate: T,
+        d1: T,
+        d2: T,
+        out: T,
+        m: usize,
+        n: usize,
+    },
     ScaleGate {
         x: T,
         gate: T,
@@ -737,6 +748,7 @@ pub enum OpProof {
     RmsNorm(RmsNormProof),
     RoPE(RoPEProof),
     TopKSelect(TopKSelectProof),
+    Argmax(ArgmaxProof),
     ScaleGate,
 }
 
@@ -870,6 +882,7 @@ impl Op {
             } => vec![x, w, rsqrt_table],
             Op::RoPE { x, cos, sin, .. } => vec![x, cos, sin],
             Op::TopKSelect { x, .. } => vec![x],
+            Op::Argmax { x, .. } => vec![x],
             Op::ScaleGate { x, gate, .. } => vec![x, gate],
         }
     }
@@ -898,6 +911,14 @@ impl Op {
             Op::Projection { out, rem, .. } => vec![out, rem],
             Op::Softmax { e, out, .. } => vec![e, out],
             Op::TopKSelect {
+                sel,
+                thr,
+                gate,
+                d1,
+                d2,
+                ..
+            } => vec![sel, thr, gate, d1, d2],
+            Op::Argmax {
                 sel,
                 thr,
                 gate,
@@ -1331,6 +1352,26 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                 store.v[d1] = TensorData::Owned(d1_v);
                 store.v[d2] = TensorData::Owned(d2_v);
             }
+            Op::Argmax {
+                x,
+                sel,
+                thr,
+                gate,
+                d1,
+                d2,
+                out,
+                m,
+                n,
+            } => {
+                let (thr_v, sel_v, gate_v, d1_v, d2_v, out_v) =
+                    argmax_forward(store.get(x), m, n);
+                store.v[thr] = TensorData::Owned(thr_v);
+                store.v[sel] = TensorData::Owned(sel_v);
+                store.v[gate] = TensorData::Owned(gate_v);
+                store.v[d1] = TensorData::Owned(d1_v);
+                store.v[d2] = TensorData::Owned(d2_v);
+                store.idx[out] = out_v;
+            }
         }
     }
 }
@@ -1640,6 +1681,34 @@ pub fn prove_shard_precomputed(
                 claims.push((gate, p.r.clone(), mle::eval(store.get(gate), &p.r)));
                 op_proofs.push(OpProof::TopKSelect(p));
             }
+            Op::Argmax {
+                x,
+                sel,
+                thr,
+                gate,
+                d1,
+                d2,
+                out,
+                m,
+                n,
+            } => {
+                let p = prove_argmax(
+                    store.get(x),
+                    store.get(sel),
+                    store.get(thr),
+                    store.get(gate),
+                    store.get(d1),
+                    store.get(d2),
+                    &store.idx[out],
+                    m,
+                    n,
+                    rng,
+                );
+                claims.push((x, p.topk.r.clone(), mle::eval(store.get(x), &p.topk.r)));
+                claims.push((sel, p.topk.r.clone(), mle::eval(store.get(sel), &p.topk.r)));
+                claims.push((gate, p.topk.r.clone(), mle::eval(store.get(gate), &p.topk.r)));
+                op_proofs.push(OpProof::Argmax(p));
+            }
         }
     }
 
@@ -1807,6 +1876,11 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
             }
             (Op::TopKSelect { k, .. }, OpProof::TopKSelect(p)) => {
                 if !verify_topk(p, *k) {
+                    return false;
+                }
+            }
+            (Op::Argmax { m, n, .. }, OpProof::Argmax(p)) => {
+                if !verify_argmax(p, *m, *n) {
                     return false;
                 }
             }
@@ -4170,7 +4244,8 @@ mod tests {
             | OpProof::LayerNormCentered(..)
             | OpProof::RmsNorm(..)
             | OpProof::RoPE(..)
-            | OpProof::TopKSelect(..) => true,
+            | OpProof::TopKSelect(..)
+            | OpProof::Argmax(..) => true,
         }
     }
 
