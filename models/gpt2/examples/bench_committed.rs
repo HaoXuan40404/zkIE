@@ -92,9 +92,9 @@ fn main() {
     let mut argmax_ok = true;
     for i in 0..m {
         let mut best = 0usize;
-        let mut best_v = round_div(to_i64(lg[i * 65536]), 8192);
+        let mut best_v = to_i64(lg[i * 65536]);
         for j in 1..50257 {
-            let v = round_div(to_i64(lg[i * 65536 + j]), 8192);
+            let v = to_i64(lg[i * 65536 + j]);
             if v > best_v {
                 best_v = v;
                 best = j;
@@ -107,9 +107,9 @@ fn main() {
     let mut n_mismatch = 0;
     for i in 0..m {
         let mut best = 0usize;
-        let mut best_v = round_div(to_i64(lg[i * 65536]), 8192);
+        let mut best_v = to_i64(lg[i * 65536]);
         for j in 1..50257 {
-            let v = round_div(to_i64(lg[i * 65536 + j]), 8192);
+            let v = to_i64(lg[i * 65536 + j]);
             if v > best_v { best_v = v; best = j; }
         }
         if arg_idx[i] as usize != best {

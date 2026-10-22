@@ -25,15 +25,13 @@ pub struct TopKSelectProof {
     pub row_sum: VirtualProof,
     pub sel_range: FractionalProof,
     pub d1_range: FractionalProof,
-    pub d2_range: FractionalProof,
+    pub d2_decomp: RangeDecompProof,
     pub r: Vec<Goldilocks>,
     pub r_row: Vec<Goldilocks>,
     pub a_sel: Goldilocks,
     pub b_sel: Goldilocks,
     pub a_d1: Goldilocks,
     pub b_d1: Goldilocks,
-    pub a_d2: Goldilocks,
-    pub b_d2: Goldilocks,
     pub range_bits: usize,
     pub sel: Vec<Goldilocks>,
     pub d1: Vec<Goldilocks>,
@@ -156,10 +154,7 @@ pub fn prove_topk(
         .collect();
     let d1_range = prove_lookup_fractional(&d1_idx, d1, &d1_table, a_d1, b_d1, rng);
 
-    let a_d2 = rng.field();
-    let b_d2 = rng.field();
-    let d2_idx: Vec<u32> = d2.iter().map(|&v| to_i32(v) as u32).collect();
-    let d2_range = prove_lookup_fractional(&d2_idx, d2, &d1_table, a_d2, b_d2, rng);
+    let d2_decomp = prove_range_decomp(d2, rng);
 
     TopKSelectProof {
         gate_rel,
@@ -168,15 +163,13 @@ pub fn prove_topk(
         row_sum,
         sel_range,
         d1_range,
-        d2_range,
+        d2_decomp,
         r,
         r_row,
         a_sel,
         b_sel,
         a_d1,
         b_d1,
-        a_d2,
-        b_d2,
         range_bits,
             sel: sel.to_vec(),
         d1: d1.to_vec(),
@@ -266,18 +259,7 @@ pub fn verify_topk(proof: &TopKSelectProof, k: usize) -> bool {
         return false;
     }
 
-    let d2_idx: Vec<u32> = proof.d2.iter().map(|&v| to_i32(v) as u32).collect();
-    let d2_table: Vec<Goldilocks> = (0..(1usize << proof.range_bits))
-        .map(|j| Goldilocks::from_u64(j as u64))
-        .collect();
-    verify_lookup_fractional(
-        &proof.d2_range,
-        &d2_idx,
-        &proof.d2,
-        &d2_table,
-        proof.a_d2,
-        proof.b_d2,
-    )
+    verify_range_decomp(&proof.d2_decomp)
 }
 
 #[cfg(test)]
@@ -400,4 +382,117 @@ mod argmax_tests {
         bad.out[0] = (bad.out[0] + 1) % n as u32;
         assert!(!verify_argmax(&bad, m, n));
     }
+}
+
+
+/// 48-bit range decomposition: prove each value is in [0, 2^48) by splitting it
+/// into three 16-bit limbs, range-checking each limb against a 2^16 table, and
+/// recomposing. Avoids a single huge lookup table for wide (e.g. raw logit)
+/// differences, so the argmax can run on un-shifted logits (no near-tie flip).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct RangeDecompProof {
+    pub c0_range: FractionalProof,
+    pub c1_range: FractionalProof,
+    pub c2_range: FractionalProof,
+    pub recompose: VirtualProof,
+    pub a0: Goldilocks,
+    pub b0: Goldilocks,
+    pub a1: Goldilocks,
+    pub b1: Goldilocks,
+    pub a2: Goldilocks,
+    pub b2: Goldilocks,
+    pub c0: Vec<Goldilocks>,
+    pub c1: Vec<Goldilocks>,
+    pub c2: Vec<Goldilocks>,
+    pub r: Vec<Goldilocks>,
+}
+
+pub fn prove_range_decomp(
+    values: &[Goldilocks],
+    rng: &mut impl ChallengeSource,
+) -> RangeDecompProof {
+    let c0: Vec<Goldilocks> = values
+        .iter()
+        .map(|&v| Goldilocks::from_u64((to_i64(v) as u64) & 0xFFFF))
+        .collect();
+    let c1: Vec<Goldilocks> = values
+        .iter()
+        .map(|&v| Goldilocks::from_u64(((to_i64(v) as u64) >> 16) & 0xFFFF))
+        .collect();
+    let c2: Vec<Goldilocks> = values
+        .iter()
+        .map(|&v| Goldilocks::from_u64(((to_i64(v) as u64) >> 32) & 0xFFFF))
+        .collect();
+    let table: Vec<Goldilocks> = (0..(1usize << 16))
+        .map(|j| Goldilocks::from_u64(j as u64))
+        .collect();
+    let a0 = rng.field();
+    let b0 = rng.field();
+    let a1 = rng.field();
+    let b1 = rng.field();
+    let a2 = rng.field();
+    let b2 = rng.field();
+    let c0_idx: Vec<u32> = c0.iter().map(|&v| to_i32(v) as u32).collect();
+    let c1_idx: Vec<u32> = c1.iter().map(|&v| to_i32(v) as u32).collect();
+    let c2_idx: Vec<u32> = c2.iter().map(|&v| to_i32(v) as u32).collect();
+    let c0_range = prove_lookup_fractional(&c0_idx, &c0, &table, a0, b0, rng);
+    let c1_range = prove_lookup_fractional(&c1_idx, &c1, &table, a1, b1, rng);
+    let c2_range = prove_lookup_fractional(&c2_idx, &c2, &table, a2, b2, rng);
+    let r: Vec<Goldilocks> = (0..values.len().trailing_zeros() as usize)
+        .map(|_| rng.field())
+        .collect();
+    let neg = Goldilocks::ZERO - Goldilocks::ONE;
+    let s16 = Goldilocks::from_u64(1 << 16);
+    let s32 = Goldilocks::from_u64(1 << 32);
+    let terms = vec![
+        (Goldilocks::ONE, vec![0usize]),
+        (neg, vec![1usize]),
+        (neg * s16, vec![2usize]),
+        (neg * s32, vec![3usize]),
+    ];
+    let recompose = prove_virtual(&[values, &c0, &c1, &c2], &terms, Goldilocks::ZERO, &r);
+    RangeDecompProof {
+        c0_range,
+        c1_range,
+        c2_range,
+        recompose,
+        a0,
+        b0,
+        a1,
+        b1,
+        a2,
+        b2,
+        c0,
+        c1,
+        c2,
+        r,
+    }
+}
+
+pub fn verify_range_decomp(proof: &RangeDecompProof) -> bool {
+    let table: Vec<Goldilocks> = (0..(1usize << 16))
+        .map(|j| Goldilocks::from_u64(j as u64))
+        .collect();
+    let c0_idx: Vec<u32> = proof.c0.iter().map(|&v| to_i32(v) as u32).collect();
+    let c1_idx: Vec<u32> = proof.c1.iter().map(|&v| to_i32(v) as u32).collect();
+    let c2_idx: Vec<u32> = proof.c2.iter().map(|&v| to_i32(v) as u32).collect();
+    let neg = Goldilocks::ZERO - Goldilocks::ONE;
+    let s16 = Goldilocks::from_u64(1 << 16);
+    let s32 = Goldilocks::from_u64(1 << 32);
+    let terms = vec![
+        (Goldilocks::ONE, vec![0usize]),
+        (neg, vec![1usize]),
+        (neg * s16, vec![2usize]),
+        (neg * s32, vec![3usize]),
+    ];
+    verify_lookup_fractional(&proof.c0_range, &c0_idx, &proof.c0, &table, proof.a0, proof.b0)
+        && verify_lookup_fractional(&proof.c1_range, &c1_idx, &proof.c1, &table, proof.a1, proof.b1)
+        && verify_lookup_fractional(&proof.c2_range, &c2_idx, &proof.c2, &table, proof.a2, proof.b2)
+        && verify_virtual(
+            &proof.recompose,
+            &terms,
+            Goldilocks::ZERO,
+            &proof.r,
+            &proof.recompose.final_evals,
+        )
 }

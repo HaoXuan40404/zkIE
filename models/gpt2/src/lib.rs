@@ -8,7 +8,7 @@ use std::fs;
 use std::sync::Arc;
 
 use zkie_core::common::field::{Goldilocks, XorShift64};
-use zkie_core::common::fixed_point::{from_i32, to_i32};
+use zkie_core::common::fixed_point::{from_i32, from_i64, to_i32};
 use zkie_core::common::weights_io::WeightMmap;
 use zkie_ops::compose::{causal_mask, Op, Store};
 
@@ -395,15 +395,6 @@ pub fn build_gpt2(
         k: D,
         n: 65536,
     });
-    // Right-shift the logits by 13 bits before argmax so the range check
-    // (thr - x) stays bounded; argmax is invariant under this (monotone) shift.
-    let logits_scaled = store.push(vec![]);
-    ops.push(Op::Scale {
-        x: logits,
-        out: logits_scaled,
-        factor: 1,
-        shift: 13,
-    });
     // Mask the padded vocab columns (50257..65536) to a large negative so the
     // argmax never lands on padding; the value stays within the range-check.
     let mask: Vec<Goldilocks> = (0..65536)
@@ -411,14 +402,14 @@ pub fn build_gpt2(
             if j < 50257 {
                 from_i32(0)
             } else {
-                from_i32(-(1 << 26))
+                from_i64(-(1i64 << 41))
             }
         })
         .collect();
     let mask_t = store.push(broadcast(&mask, m));
     let logits_masked = store.push(vec![]);
     ops.push(Op::Add {
-        a: logits_scaled,
+        a: logits,
         b: mask_t,
         c: logits_masked,
     });
