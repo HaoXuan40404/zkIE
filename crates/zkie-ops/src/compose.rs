@@ -32,6 +32,7 @@ use zkie_core::common::logup_gkr::{
     verify_lookup_fractional_batch, FractionalProof,
 };
 use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, MatmulProof};
+use zkie_core::common::batched_matmul::{self as bmm, BatchedMatmulProof};
 use zkie_core::common::mle;
 use zkie_core::common::same_poly::{prove_same_poly, verify_same_poly, SamePolyProof};
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
@@ -736,6 +737,14 @@ pub enum Op {
         m: usize,
         h: usize,
     },
+    BatchedMatMul {
+        a: T,
+        w: T,
+        c: T,
+        s: usize,
+        k: usize,
+        n: usize,
+    },
 }
 
 /// A proof for one op, kept heterogeneous because the primitives have different
@@ -767,6 +776,7 @@ pub enum OpProof {
     Argmax(ArgmaxProof),
     Scatter(ScatterProof),
     Gather(ScatterAddProof),
+    BatchedMatMul(BatchedMatmulProof, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>),
     ScaleGate,
 }
 
@@ -904,6 +914,7 @@ impl Op {
             Op::ScaleGate { x, gate, .. } => vec![x, gate],
             Op::Scatter { sel, .. } => vec![sel],
             Op::Gather { weighted, token_id, .. } => vec![weighted, token_id],
+            Op::BatchedMatMul { a, w, .. } => vec![a, w],
         }
     }
 
@@ -952,6 +963,7 @@ impl Op {
                 ..
             } => vec![token_id, expert_of],
             Op::Gather { out, .. } => vec![out],
+            Op::BatchedMatMul { c, .. } => vec![c],
         }
     }
 }
@@ -1133,6 +1145,10 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
             } => {
                 let o = gather_forward(store.get(weighted), &store.idx[token_id], m, h);
                 store.v[out] = TensorData::Owned(o);
+            }
+            Op::BatchedMatMul { a, w, c, s, k, n } => {
+                let o = bmm::forward(store.get(a), store.get(w), s, k, n);
+                store.v[c] = TensorData::Owned(o);
             }
             Op::ScaleGate {
                 x,
@@ -1505,6 +1521,20 @@ pub fn prove_shard_precomputed(
                     rng,
                 );
                 op_proofs.push(OpProof::Gather(p));
+            }
+            Op::BatchedMatMul { a, w, c, s, k, n } => {
+                let u: Vec<Goldilocks> = (0..s.trailing_zeros() as usize).map(|_| rng.field()).collect();
+                let v: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
+                let ch: Vec<Goldilocks> = (0..(s * k).trailing_zeros() as usize).map(|_| rng.field()).collect();
+                let p = bmm::prove(store.get(a), store.get(w), store.get(c), s, k, n, &u, &v, &ch);
+                claims.push((a, ch.clone(), mle::eval(store.get(a), &ch)));
+                let mut wp = v.clone();
+                wp.extend_from_slice(&ch);
+                claims.push((w, wp.clone(), mle::eval(store.get(w), &wp)));
+                let mut cp = v.clone();
+                cp.extend_from_slice(&u);
+                claims.push((c, cp.clone(), mle::eval(store.get(c), &cp)));
+                op_proofs.push(OpProof::BatchedMatMul(p, u, v, ch));
             }
             Op::ScaleGate { .. } => {
                 op_proofs.push(OpProof::ScaleGate);
@@ -1900,6 +1930,11 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
             }
             (Op::Gather { m, h, .. }, OpProof::Gather(p)) => {
                 if !verify_scatter_add(p, &p.weighted, &p.token_id, &p.out, *m, *h) {
+                    return false;
+                }
+            }
+            (Op::BatchedMatMul { s, k, .. }, OpProof::BatchedMatMul(p, u, _, ch)) => {
+                if !bmm::verify(p, *s, *k, u, ch) {
                     return false;
                 }
             }
@@ -3597,6 +3632,34 @@ mod tests {
         // tamper test removed: plain path is store-free; soundness is in the committed path
     }
 
+
+    #[test]
+    fn op_shard_batched_matmul_roundtrip() {
+        use zkie_core::common::batched_matmul;
+
+        let mut rng = XorShift64::new(0x2525);
+        let (s, k, n) = (4usize, 4usize, 2usize);
+        let mut store = Store::new();
+        let a = store.push(
+            (0..s * k)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let w = store.push(
+            (0..s * k * n)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let c = store.push(vec![]);
+        let ops = vec![Op::BatchedMatMul { a, w, c, s, k, n }];
+        let proof = prove_shard(&mut store, &ops, &[c], &mut rng);
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
+
+        let expected = batched_matmul::forward(store.get(a), store.get(w), s, k, n);
+        assert_eq!(store.get(c), expected.as_slice());
+    }
+
+
     #[test]
     fn op_shard_transpose_matmul_roundtrip() {
         // scores = Q @ K^T  (the core of attention): transpose K, then matmul.
@@ -4385,7 +4448,8 @@ mod tests {
             | OpProof::TopKSelect(..)
             | OpProof::Argmax(..)
             | OpProof::Scatter(..)
-            | OpProof::Gather(..) => true,
+            | OpProof::Gather(..)
+            | OpProof::BatchedMatMul(..) => true,
         }
     }
 
