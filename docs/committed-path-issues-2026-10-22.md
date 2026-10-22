@@ -268,3 +268,9 @@ GPT-2 seq16 real sequence ("The sky is ..."): argmax 16/16,
 argmax_op_matches=true (n_mismatch=0), sequence_shift_ok=true, commit 10.5s /
 prove 48.5s / verify 21.5s / proof 101MB. Prove/verify are also faster than the
 shifted 2^27 single-table version.
+
+
+GPT-2 seq512 (range-decomposition, random-token input): argmax 511/512,
+argmax_op_matches=true (n_mismatch=0), commit 18.0s / prove 89.6s / verify
+33.8s / proof 3.35GB / rss 40.2GB. Prove/verify are faster than the shifted
+2^27 single-table version (104s/53s) and the proven argmax is now exact.
