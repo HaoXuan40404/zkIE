@@ -68,3 +68,11 @@ argmax 511/512 (one near-tie fixed-point), peak RSS ~30.3 GB, proof bytes ~1.73 
 
 Note: an earlier argmax=0/512 was a bench bug (the argmax loop used vocab 65536
 instead of the real 50257); the committed path itself was correct.
+
+## Next steps (from seq=512 baseline)
+
+- proof bytes ~1.73 GB is large; the weight/boundary opening proofs dominate it.
+  Worth compressing (share the horizontal-merged FRI opening across tables, keep
+  only Merkle paths).
+- verify (68.1s) is larger than prove (51.9s) now; worth profiling what verify
+  spends on (weight opening verification vs boundary cross-bind vs sumcheck).
