@@ -202,3 +202,91 @@ mod moe_minimal {
         assert!(!verify_scatter_add(&gp, &weighted, &token_id, &bad, m, h));
     }
 }
+#[cfg(test)]
+mod moe_bmm {
+    use super::*;
+    use crate::scatter::{prove_scatter, scatter_forward, verify_scatter};
+    use zkie_core::common::batched_matmul;
+    use zkie_core::common::field::{ChallengeSource, Goldilocks, PrimeCharacteristicRing, XorShift64};
+
+    #[test]
+    fn expert_major_bmm_closure() {
+        let mut rng = XorShift64::new(0x1234);
+        let (m, n, h, p) = (4usize, 4usize, 4usize, 2usize);
+        let k_top = 2usize;
+        let s = m * k_top;
+
+        let mut sel = vec![Goldilocks::ZERO; m * n];
+        for t in 0..m {
+            sel[t * n + (t % n)] = Goldilocks::ONE;
+            sel[t * n + ((t + 1) % n)] = Goldilocks::ONE;
+        }
+        let gate: Vec<Goldilocks> = (0..m * n)
+            .map(|i| Goldilocks::from_u64((i as u64 % 3) + 1))
+            .collect();
+        let x: Vec<Goldilocks> = (0..m * h)
+            .map(|i| Goldilocks::from_u64((i as u64 % 7) + 1))
+            .collect();
+        let eg_all: Vec<Goldilocks> = (0..n * h * p)
+            .map(|i| Goldilocks::from_u64((i as u64 % 5) + 1))
+            .collect();
+
+        let (token_id, expert_of) = scatter_forward(&sel, m, n);
+        assert_eq!(token_id.len(), s);
+
+        let mut seg = vec![Goldilocks::ZERO; s * h];
+        for pos in 0..s {
+            let t = token_id[pos] as usize;
+            for d in 0..h {
+                seg[pos * h + d] = x[t * h + d];
+            }
+        }
+
+        let eg = batched_matmul::gather_weights(&expert_of, &eg_all, s, n, h, p);
+        let g = batched_matmul::forward(&seg, &eg, s, h, p);
+
+        let weighted: Vec<Goldilocks> = (0..s * p)
+            .map(|i| {
+                let pos = i / p;
+                g[i] * gate[token_id[pos] as usize * n + expert_of[pos] as usize]
+            })
+            .collect();
+        let out = gather_forward(&weighted, &token_id, m, p);
+
+        let mut reference = vec![Goldilocks::ZERO; m * p];
+        for t in 0..m {
+            for e in 0..n {
+                if sel[t * n + e] == Goldilocks::ONE {
+                    for j in 0..p {
+                        let mut acc = Goldilocks::ZERO;
+                        for d in 0..h {
+                            acc = acc + x[t * h + d] * eg_all[e * h * p + d * p + j];
+                        }
+                        reference[t * p + j] = reference[t * p + j] + acc * gate[t * n + e];
+                    }
+                }
+            }
+        }
+        assert_eq!(out, reference);
+
+        let sp = prove_scatter(&sel, &token_id, &expert_of, m, n, &mut rng);
+        assert!(verify_scatter(&sp, m, n));
+
+        let u: Vec<Goldilocks> = (0..s.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let v: Vec<Goldilocks> = (0..p.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let ch: Vec<Goldilocks> = (0..(s * h).trailing_zeros() as usize)
+            .map(|_| rng.field())
+            .collect();
+        let bp = batched_matmul::prove(&seg, &eg, &g, s, h, p, &u, &v, &ch);
+        assert!(batched_matmul::verify(&bp, s, h, &u, &ch));
+
+        let gp = prove_scatter_add(&weighted, &token_id, &out, m, p, &mut rng);
+        assert!(verify_scatter_add(&gp, &weighted, &token_id, &out, m, p));
+
+        let mut bad_tid = token_id.clone();
+        bad_tid[0] = (bad_tid[0] + 1) % m as u32;
+        let bad_sp = prove_scatter(&sel, &bad_tid, &expert_of, m, n, &mut rng);
+        assert!(!verify_scatter(&bad_sp, m, n));
+    }
+}
+
