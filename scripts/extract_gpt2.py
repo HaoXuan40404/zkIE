@@ -76,15 +76,17 @@ def main():
     assert len(prompt_ids) < SEQ, "prompt longer than SEQ"
     gen_sess = ort.InferenceSession(os.path.join(MODELS, "gpt2/gpt2.onnx"))
     gen_ids = prompt_ids[:]
+    # The ONNX graph is a fixed [1, SEQ] shape; pad the current prefix to SEQ and
+    # rely on causal attention so the padding after the prefix is never seen.
     for _ in range(SEQ - len(prompt_ids)):
-        cur = np.asarray([gen_ids], dtype=np.int64)
-        cur_mask = np.ones((1, len(gen_ids)), dtype=np.int64)
-        cur_pos = np.arange(len(gen_ids), dtype=np.int64).reshape(1, len(gen_ids))
+        cur = np.asarray([gen_ids + [0] * (SEQ - len(gen_ids))], dtype=np.int64)
+        cur_mask = np.ones((1, SEQ), dtype=np.int64)
+        cur_pos = np.arange(SEQ, dtype=np.int64).reshape(1, SEQ)
         lg = gen_sess.run(
             ["logits"],
             {"input_ids": cur, "attention_mask": cur_mask, "position_ids": cur_pos},
         )[0]
-        gen_ids.append(int(lg[0, -1].argmax()))
+        gen_ids.append(int(lg[0, len(gen_ids) - 1].argmax()))
     input_ids = np.asarray([gen_ids], dtype=np.int64)
     attention_mask = np.ones((1, SEQ), dtype=np.int64)
     position_ids = np.arange(SEQ, dtype=np.int64).reshape(1, SEQ)

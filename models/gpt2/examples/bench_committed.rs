@@ -38,14 +38,14 @@ fn peak_rss_kb() -> u64 {
 }
 
 fn main() {
-    let m = 512usize;
+    let m = std::env::var("M").ok().and_then(|v| v.parse().ok()).unwrap_or(16usize);
     let shift = 16u32;
     let dir = "models/gpt2/weights";
 
     let mut store = Store::new();
     let mut ops = Vec::new();
     let (_x0, logits, tokens, t) = build_gpt2(&mut store, &mut ops, dir, m, shift);
-    let gt = load_i32(&format!("{dir}/gt_argmax_512_i32.bin"));
+    let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
 
     // Boundary tensors are m x D = 512 x 1024 = 2^19.
     let whir = Whir::new_testing(19);
@@ -121,7 +121,7 @@ fn main() {
     // (only meaningful for a real generated sequence; random tokens will not hold).
     println!(
         "sequence_shift_ok={}",
-        verify_sequence_shift(&store.idx[tokens], &store.idx[t], &[])
+        verify_sequence_shift(&store.idx[tokens], &store.idx[t], &store.idx[tokens][..3])
     );
     println!(
         "commit={commit_t:?} prove={prove_t:?} verify={verify_t:?} argmax={matches}/{m} rss={}kB proof_bytes={}",
