@@ -1,4 +1,5 @@
 pub mod batch_open;
+pub mod cache;
 pub mod committed;
 #[cfg(feature = "cuda")]
 pub mod cuda_buffer;
