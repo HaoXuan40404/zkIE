@@ -318,3 +318,82 @@ mod tests {
         assert_eq!(ev, crate::common::mle::eval(&y, &r));
     }
 }
+
+
+/// LogUp permutation argument: prove two same-length multisets `a` and `b` are
+/// equal as multisets (i.e. `b` is a permutation of `a`) via the fractional
+/// identity `sum 1/(alpha - a_i) == sum 1/(alpha - b_j)`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PermutationProof {
+    pub frac: FractionalProof,
+    pub alpha: Goldilocks,
+}
+
+pub fn prove_permutation(
+    a: &[Goldilocks],
+    b: &[Goldilocks],
+    rng: &mut impl ChallengeSource,
+) -> PermutationProof {
+    assert_eq!(a.len(), b.len());
+    let alpha = rng.field();
+    let n = a.len();
+    let total = (2 * n).next_power_of_two();
+    let mut num = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![Goldilocks::from_u64(1); total];
+    for i in 0..n {
+        num[i] = Goldilocks::from_u64(1);
+        den[i] = alpha - a[i];
+    }
+    for j in 0..n {
+        num[n + j] = from_i64(-1);
+        den[n + j] = alpha - b[j];
+    }
+    PermutationProof {
+        frac: prove_fractional(num, den, rng),
+        alpha,
+    }
+}
+
+pub fn verify_permutation(proof: &PermutationProof, a: &[Goldilocks], b: &[Goldilocks]) -> bool {
+    assert_eq!(a.len(), b.len());
+    let n = a.len();
+    let total = (2 * n).next_power_of_two();
+    let mut num = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![Goldilocks::from_u64(1); total];
+    for i in 0..n {
+        num[i] = Goldilocks::from_u64(1);
+        den[i] = proof.alpha - a[i];
+    }
+    for j in 0..n {
+        num[n + j] = from_i64(-1);
+        den[n + j] = proof.alpha - b[j];
+    }
+    verify_fractional(&proof.frac, num, den, Goldilocks::from_u64(0))
+}
+
+#[cfg(test)]
+mod permutation_tests {
+    use super::*;
+
+    #[test]
+    fn permutation_roundtrip() {
+        let mut rng = XorShift64::new(0xABCD);
+        let a: Vec<Goldilocks> = vec![1, 2, 3, 4]
+            .into_iter()
+            .map(|v| Goldilocks::from_u64(v))
+            .collect();
+        // b is a permutation of a
+        let b: Vec<Goldilocks> = vec![3, 1, 4, 2]
+            .into_iter()
+            .map(|v| Goldilocks::from_u64(v))
+            .collect();
+        let proof = prove_permutation(&a, &b, &mut rng);
+        assert!(verify_permutation(&proof, &a, &b));
+        // a non-permutation must reject
+        let bad: Vec<Goldilocks> = vec![3, 1, 4, 5]
+            .into_iter()
+            .map(|v| Goldilocks::from_u64(v))
+            .collect();
+        assert!(!verify_permutation(&proof, &a, &bad));
+    }
+}
