@@ -1,6 +1,6 @@
-//! GPT-2 seq16 end-to-end through the committed (root-only) shard-DAG path:
-//! weights and shard boundaries are WHIR-committed and opened, and the verifier
-//! holds only commitment roots + opening proofs (no weight/activation data).
+//! GPT-2 committed (root-only) shard-DAG path, end to end: weights and shard
+//! boundaries are WHIR-committed (90-bit) and opened, the verifier holds only
+//! commitment roots + opening proofs. Reports commit / prove / verify separately.
 
 use std::fs;
 
@@ -8,7 +8,9 @@ use zkie_core::common::field::{Goldilocks, XorShift64};
 use zkie_core::common::fixed_point::{from_i32, to_i32, to_i64};
 use zkie_core::pcs::whir::Whir;
 use zkie_models_gpt2::build_gpt2;
-use zkie_ops::compose::{commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes, Store};
+use zkie_ops::compose::{
+    commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes, Store,
+};
 
 fn load_i32(path: &str) -> Vec<Goldilocks> {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
@@ -29,37 +31,42 @@ fn peak_rss_kb() -> u64 {
 }
 
 fn main() {
-    let m = 16usize;
+    let m = 512usize;
     let shift = 16u32;
     let dir = "models/gpt2/weights";
 
     let mut store = Store::new();
     let mut ops = Vec::new();
     let (_x0, logits) = build_gpt2(&mut store, &mut ops, dir, m, shift);
-    let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
+    let gt = load_i32(&format!("{dir}/gt_argmax_512_i32.bin"));
 
-    let whir = Whir::new_testing(14);
+    // Boundary tensors are m x D = 512 x 1024 = 2^19.
+    let whir = Whir::new_testing(19);
     let mut rng = XorShift64::new(0xBEEF);
 
     let t0 = std::time::Instant::now();
-    let cached = commit_model_weights(&store, &ops, "/data/jimmyshi/zkie-cache/gpt2-model-batches-v2");
-    let proof = prove_committed_shard_dag(&mut store, &ops, 176, &whir, &cached, &mut rng);
-    let prove_t = t0.elapsed();
+    let cached =
+        commit_model_weights(&store, &ops, "/data/jimmyshi/zkie-cache/gpt2-model-batches-v2");
+    let commit_t = t0.elapsed();
 
     let t1 = std::time::Instant::now();
+    let proof = prove_committed_shard_dag(&mut store, &ops, 176, &whir, &cached, &mut rng);
+    let prove_t = t1.elapsed();
+
+    let t2 = std::time::Instant::now();
     let bytes = bincode::serialize(&proof).unwrap();
     assert!(
         verify_committed_shard_dag_bytes(&bytes, &store.owned_slices(), &ops, 176, &whir),
         "committed proof failed"
     );
-    let verify_t = t1.elapsed();
+    let verify_t = t2.elapsed();
 
     let lg = store.get(logits);
     let mut matches = 0;
     for i in 0..m {
         let mut best = 0usize;
         let mut best_v = lg[i * 65536];
-        for j in 1..65536 {
+        for j in 1..50257 {
             let v = lg[i * 65536 + j];
             if to_i64(v) > to_i64(best_v) {
                 best_v = v;
@@ -72,7 +79,7 @@ fn main() {
     }
 
     println!(
-        "prove={prove_t:?} verify={verify_t:?} argmax={matches}/{m} rss={}kB proof_bytes={}",
+        "commit={commit_t:?} prove={prove_t:?} verify={verify_t:?} argmax={matches}/{m} rss={}kB proof_bytes={}",
         peak_rss_kb(),
         bytes.len()
     );
