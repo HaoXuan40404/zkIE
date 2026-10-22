@@ -121,7 +121,7 @@ fn main() {
     // (only meaningful for a real generated sequence; random tokens will not hold).
     println!(
         "sequence_shift_ok={}",
-        verify_sequence_shift(&store.idx[tokens], &store.idx[t], &store.idx[tokens][..if m <= 16 { 3 } else { 0 }])
+        verify_sequence_shift(&store.idx[tokens], &store.idx[t], &store.idx[tokens][..3])
     );
     println!(
         "commit={commit_t:?} prove={prove_t:?} verify={verify_t:?} argmax={matches}/{m} rss={}kB proof_bytes={}",

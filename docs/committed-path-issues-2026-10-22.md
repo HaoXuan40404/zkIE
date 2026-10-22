@@ -274,3 +274,9 @@ GPT-2 seq512 (range-decomposition, random-token input): argmax 511/512,
 argmax_op_matches=true (n_mismatch=0), commit 18.0s / prove 89.6s / verify
 33.8s / proof 3.35GB / rss 40.2GB. Prove/verify are faster than the shifted
 2^27 single-table version (104s/53s) and the proven argmax is now exact.
+
+
+GPT-2 seq512 REAL generated sequence ("The sky is ...", HF FP32 generation):
+argmax 512/512, argmax_op_matches=true (n_mismatch=0), sequence_shift_ok=true,
+commit 18.5s / prove 89.8s / verify 34.2s / proof 3.35GB / rss 40.3GB. The one-pass
+sequence certification passes end to end on a real 512-token response.
