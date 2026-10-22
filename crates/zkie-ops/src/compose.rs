@@ -733,6 +733,7 @@ pub enum Op {
     Gather {
         weighted: T,
         token_id: T,
+        gate: T,
         out: T,
         m: usize,
         h: usize,
@@ -926,7 +927,7 @@ impl Op {
             Op::Argmax { x, .. } => vec![x],
             Op::ScaleGate { x, gate, .. } => vec![x, gate],
             Op::Scatter { sel, .. } => vec![sel],
-            Op::Gather { weighted, token_id, .. } => vec![weighted, token_id],
+            Op::Gather { weighted, token_id, gate, .. } => vec![weighted, token_id, gate],
             Op::BatchedMatMul { a, w, .. } => vec![a, w],
             Op::IdxBroadcast { base, .. } => vec![base],
             Op::CombineIdx { a, b, .. } => vec![a, b],
@@ -1156,11 +1157,18 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
             Op::Gather {
                 weighted,
                 token_id,
+                gate,
                 out,
                 m,
                 h,
             } => {
-                let o = gather_forward(store.get(weighted), &store.idx[token_id], m, h);
+                let o = gather_forward(
+                    store.get(weighted),
+                    &store.idx[token_id],
+                    store.get(gate),
+                    m,
+                    h,
+                );
                 store.v[out] = TensorData::Owned(o);
             }
             Op::BatchedMatMul { a, w, c, s, k, n } => {
@@ -1546,6 +1554,7 @@ pub fn prove_shard_precomputed(
             Op::Gather {
                 weighted,
                 token_id,
+                gate,
                 out,
                 m,
                 h,
@@ -1553,6 +1562,7 @@ pub fn prove_shard_precomputed(
                 let p = prove_scatter_add(
                     store.get(weighted),
                     &store.idx[token_id],
+                    store.get(gate),
                     store.get(out),
                     m,
                     h,
@@ -1973,7 +1983,7 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                 }
             }
             (Op::Gather { m, h, .. }, OpProof::Gather(p)) => {
-                if !verify_scatter_add(p, &p.weighted, &p.token_id, &p.out, *m, *h) {
+                if !verify_scatter_add(p, &p.weighted, &p.token_id, &p.gate, &p.out, *m, *h) {
                     return false;
                 }
             }
@@ -3758,6 +3768,7 @@ mod tests {
         let w_t = store.push(vec![]);
 
         let g_t = store.push(vec![]);
+        let gate_ones_t = store.push(vec![Goldilocks::ONE; s]);
         let out_t = store.push(vec![]);
 
         let ops = vec![
@@ -3789,6 +3800,7 @@ mod tests {
             Op::Gather {
                 weighted: g_t,
                 token_id: token_id_t,
+                gate: gate_ones_t,
                 out: out_t,
                 m,
                 h: p,

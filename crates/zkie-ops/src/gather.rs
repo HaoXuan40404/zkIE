@@ -13,21 +13,24 @@ pub struct ScatterAddProof {
     pub alpha: Goldilocks,
     pub gamma: Vec<Goldilocks>,
     pub weighted: Vec<Goldilocks>,
+    pub gate: Vec<Goldilocks>,
     pub out: Vec<Goldilocks>,
     pub token_id: Vec<u32>,
 }
 
-/// `out[t][d] = sum_{pos: token_id[pos] == t} weighted[pos][d]`.
+/// `out[t][d] = sum_{pos: token_id[pos] == t} weighted[pos][d] * gate[pos]`.
 pub fn gather_forward(
     weighted: &[Goldilocks],
     token_id: &[u32],
+    gate: &[Goldilocks],
     m: usize,
     h: usize,
 ) -> Vec<Goldilocks> {
+    assert_eq!(gate.len(), token_id.len());
     let mut out = vec![Goldilocks::ZERO; m * h];
     for (pos, &t) in token_id.iter().enumerate() {
         for d in 0..h {
-            out[t as usize * h + d] = out[t as usize * h + d] + weighted[pos * h + d];
+            out[t as usize * h + d] = out[t as usize * h + d] + weighted[pos * h + d] * gate[pos];
         }
     }
     out
@@ -36,6 +39,7 @@ pub fn gather_forward(
 pub fn prove_scatter_add(
     weighted: &[Goldilocks],
     token_id: &[u32],
+    gate: &[Goldilocks],
     out: &[Goldilocks],
     m: usize,
     h: usize,
@@ -43,6 +47,7 @@ pub fn prove_scatter_add(
 ) -> ScatterAddProof {
     let s = token_id.len();
     assert_eq!(weighted.len(), s * h);
+    assert_eq!(gate.len(), s);
     assert_eq!(out.len(), m * h);
     let alpha = rng.field();
     let gamma: Vec<Goldilocks> = (0..h).map(|_| rng.field()).collect();
@@ -51,7 +56,7 @@ pub fn prove_scatter_add(
     let mut den = vec![Goldilocks::ONE; total];
     for pos in 0..s {
         for d in 0..h {
-            num[pos * h + d] = gamma[d] * weighted[pos * h + d];
+            num[pos * h + d] = gamma[d] * weighted[pos * h + d] * gate[pos];
             den[pos * h + d] = alpha - Goldilocks::from_u64(token_id[pos] as u64);
         }
     }
@@ -67,6 +72,7 @@ pub fn prove_scatter_add(
         alpha,
         gamma,
         weighted: weighted.to_vec(),
+        gate: gate.to_vec(),
         out: out.to_vec(),
         token_id: token_id.to_vec(),
     }
@@ -76,19 +82,21 @@ pub fn verify_scatter_add(
     proof: &ScatterAddProof,
     weighted: &[Goldilocks],
     token_id: &[u32],
+    gate: &[Goldilocks],
     out: &[Goldilocks],
     m: usize,
     h: usize,
 ) -> bool {
     let s = token_id.len();
     assert_eq!(weighted.len(), s * h);
+    assert_eq!(gate.len(), s);
     assert_eq!(out.len(), m * h);
     let total = (s * h + m * h).next_power_of_two();
     let mut num = vec![Goldilocks::ZERO; total];
     let mut den = vec![Goldilocks::ONE; total];
     for pos in 0..s {
         for d in 0..h {
-            num[pos * h + d] = proof.gamma[d] * weighted[pos * h + d];
+            num[pos * h + d] = proof.gamma[d] * weighted[pos * h + d] * gate[pos];
             den[pos * h + d] = proof.alpha - Goldilocks::from_u64(token_id[pos] as u64);
         }
     }
@@ -111,10 +119,11 @@ mod tests {
         let (m, h) = (4usize, 2usize);
         // token_id: 4 positions routed to tokens [0, 2, 1, 2]
         let token_id = vec![0u32, 2, 1, 2];
+    let ones: Vec<Goldilocks> = vec![Goldilocks::ONE; token_id.len()];
         let weighted: Vec<Goldilocks> = (0..token_id.len() * h)
             .map(|i| Goldilocks::from_u64((i as u64 % 5) + 1))
             .collect();
-        let out = gather_forward(&weighted, &token_id, m, h);
+        let out = gather_forward(&weighted, &token_id, &ones, m, h);
         // sanity: out[2] = weighted[1] + weighted[3]
         let mut expect = vec![Goldilocks::ZERO; m * h];
         for (pos, &t) in token_id.iter().enumerate() {
@@ -123,14 +132,46 @@ mod tests {
             }
         }
         assert_eq!(out, expect);
-        let proof = prove_scatter_add(&weighted, &token_id, &out, m, h, &mut rng);
-        assert!(verify_scatter_add(&proof, &weighted, &token_id, &out, m, h));
+        let proof = prove_scatter_add(&weighted, &token_id, &ones, &out, m, h, &mut rng);
+        assert!(verify_scatter_add(&proof, &weighted, &token_id, &ones, &out, m, h));
         // tamper the output -> reject
         let mut bad = out.clone();
         bad[0] = bad[0] + Goldilocks::ONE;
-        assert!(!verify_scatter_add(&proof, &weighted, &token_id, &bad, m, h));
+        assert!(!verify_scatter_add(&proof, &weighted, &token_id, &ones, &bad, m, h));
     }
 }
+
+
+
+    #[test]
+    fn scatter_add_weighted_roundtrip() {
+        let mut rng = XorShift64::new(0x888);
+        let (m, h) = (4usize, 2usize);
+        let token_id = vec![0u32, 2, 1, 2];
+        let gate: Vec<Goldilocks> = vec![
+            Goldilocks::from_u64(2),
+            Goldilocks::from_u64(3),
+            Goldilocks::from_u64(5),
+            Goldilocks::from_u64(7),
+        ];
+        let weighted: Vec<Goldilocks> = (0..token_id.len() * h)
+            .map(|i| Goldilocks::from_u64((i as u64 % 5) + 1))
+            .collect();
+        let out = gather_forward(&weighted, &token_id, &gate, m, h);
+        let mut expect = vec![Goldilocks::ZERO; m * h];
+        for (pos, &t) in token_id.iter().enumerate() {
+            for d in 0..h {
+                expect[t as usize * h + d] =
+                    expect[t as usize * h + d] + weighted[pos * h + d] * gate[pos];
+            }
+        }
+        assert_eq!(out, expect);
+        let proof = prove_scatter_add(&weighted, &token_id, &gate, &out, m, h, &mut rng);
+        assert!(verify_scatter_add(&proof, &weighted, &token_id, &gate, &out, m, h));
+        let mut bad = out.clone();
+        bad[0] = bad[0] + Goldilocks::ONE;
+        assert!(!verify_scatter_add(&proof, &weighted, &token_id, &gate, &bad, m, h));
+    }
 
 
 #[cfg(test)]
@@ -156,6 +197,7 @@ mod moe_minimal {
             .collect();
 
         let (token_id, expert_of) = crate::scatter::scatter_forward(&sel, m, n);
+    let ones: Vec<Goldilocks> = vec![Goldilocks::ONE; token_id.len()];
         let mut seg = Vec::with_capacity(token_id.len() * h);
         for &t in &token_id {
             let base = t as usize * h;
@@ -175,7 +217,7 @@ mod moe_minimal {
                 ffn_out[i] * gate[token_id[pos] as usize * n + expert_of[pos] as usize]
             })
             .collect();
-        let out = gather_forward(&weighted, &token_id, m, h);
+        let out = gather_forward(&weighted, &token_id, &ones, m, h);
 
         // dense reference
         let mut reference = vec![Goldilocks::ZERO; m * h];
@@ -193,13 +235,13 @@ mod moe_minimal {
 
         let sp = crate::scatter::prove_scatter(&sel, &token_id, &expert_of, m, n, &mut rng);
         assert!(crate::scatter::verify_scatter(&sp, m, n));
-        let gp = prove_scatter_add(&weighted, &token_id, &out, m, h, &mut rng);
-        assert!(verify_scatter_add(&gp, &weighted, &token_id, &out, m, h));
+        let gp = prove_scatter_add(&weighted, &token_id, &ones, &out, m, h, &mut rng);
+        assert!(verify_scatter_add(&gp, &weighted, &token_id, &ones, &out, m, h));
 
         // tamper the gather output -> reject
         let mut bad = out.clone();
         bad[0] = bad[0] + Goldilocks::ONE;
-        assert!(!verify_scatter_add(&gp, &weighted, &token_id, &bad, m, h));
+        assert!(!verify_scatter_add(&gp, &weighted, &token_id, &ones, &bad, m, h));
     }
 }
 #[cfg(test)]
@@ -232,6 +274,7 @@ mod moe_bmm {
             .collect();
 
         let (token_id, expert_of) = scatter_forward(&sel, m, n);
+    let ones: Vec<Goldilocks> = vec![Goldilocks::ONE; token_id.len()];
         assert_eq!(token_id.len(), s);
 
         let mut seg = vec![Goldilocks::ZERO; s * h];
@@ -251,7 +294,7 @@ mod moe_bmm {
                 g[i] * gate[token_id[pos] as usize * n + expert_of[pos] as usize]
             })
             .collect();
-        let out = gather_forward(&weighted, &token_id, m, p);
+        let out = gather_forward(&weighted, &token_id, &ones, m, p);
 
         let mut reference = vec![Goldilocks::ZERO; m * p];
         for t in 0..m {
@@ -280,8 +323,8 @@ mod moe_bmm {
         let bp = batched_matmul::prove(&seg, &eg, &g, s, h, p, &u, &v, &ch);
         assert!(batched_matmul::verify(&bp, s, h, &u, &ch));
 
-        let gp = prove_scatter_add(&weighted, &token_id, &out, m, p, &mut rng);
-        assert!(verify_scatter_add(&gp, &weighted, &token_id, &out, m, p));
+        let gp = prove_scatter_add(&weighted, &token_id, &ones, &out, m, p, &mut rng);
+        assert!(verify_scatter_add(&gp, &weighted, &token_id, &ones, &out, m, p));
 
         let mut bad_tid = token_id.clone();
         bad_tid[0] = (bad_tid[0] + 1) % m as u32;
