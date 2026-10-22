@@ -2193,7 +2193,6 @@ pub fn commit_model_weights(
     // Borrowed from feature/batch-pcs: 90-bit security + pow_bits=17 (enough for
     // packed codewords up to 2^26), instead of the low-security testing params.
     const SECURITY: usize = 90;
-    const POW_BITS: usize = 17;
 
     let weight_tensors = collect_weight_tensors(ops);
     let mut by_size: std::collections::BTreeMap<usize, Vec<(T, Vec<Goldilocks>)>> =
@@ -2215,12 +2214,19 @@ pub fn commit_model_weights(
             1
         };
         for ids in group.chunks(eff_group_size) {
+            let num_tables = ids.len();
+            let total_slots = num_tables * (1usize << arity);
+            let num_vars = total_slots.next_power_of_two().trailing_zeros() as usize;
+            // Per-group adaptive PoW budget: use the minimum pow_bits required at
+            // 90-bit security for this group's num_variables, so a large tensor
+            // (e.g. a 2^28 lm_head) gets a higher budget while small groups stay
+            // cheap. See Whir::required_pow_bits.
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(num_vars, SECURITY);
             let refs: Vec<&[Goldilocks]> = ids.iter().map(|(_, v)| v.as_slice()).collect();
-            let base_whir = zkie_core::pcs::whir::Whir::with_params(arity, SECURITY, POW_BITS);
+            let base_whir = zkie_core::pcs::whir::Whir::with_params(arity, SECURITY, pow_bits);
             let (commitment, prover_data, _protocol, batch_whir) =
                 base_whir.commit_batch(&refs);
             let num_vars = batch_whir.num_variables();
-            let num_tables = ids.len();
             let table_ids: Vec<T> = ids.iter().map(|(t, _)| *t).collect();
             let cache_path = std::path::PathBuf::from(cache_dir).join(format!(
                 "weight-a{arity}-g{}.bin",
@@ -2238,7 +2244,7 @@ pub fn commit_model_weights(
                 num_tables,
                 num_vars,
                 security: SECURITY,
-                pow_bits: POW_BITS,
+                pow_bits,
                 table_ids,
                 cache_path,
             });

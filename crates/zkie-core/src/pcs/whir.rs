@@ -29,7 +29,7 @@ use p3_sumcheck::layout::{Layout as _, SuffixProver, Table};
 use p3_sumcheck::{OpeningBatch, PointSchedule, PrescribedPointPcs, TableShape, TableSpec};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_whir::fiat_shamir::domain_separator::DomainSeparator;
-use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig};
+use p3_whir::parameters::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirConfigError};
 use p3_whir::pcs::prover::WhirProver;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -402,6 +402,37 @@ impl Whir {
             .map(|_| TableSpec::new(TableShape::new(arity, 1), point_schedule.clone()))
             .collect();
         OpeningProtocol::new(specs).pad_to_min_num_variables(folding)
+    }
+
+    /// Minimum proof-of-work bits required to reach `security_level` for a
+    /// commitment of `2^num_variables` evaluations (folding factor 5, capacity
+    /// bound). Models should adapt per group: pass this (or a larger) value as
+    /// the group's `pow_bits`, so a large tensor (e.g. a 2^28 lm_head) gets a
+    /// higher PoW budget while small groups stay cheap.
+    pub fn required_pow_bits(num_variables: usize, security_level: usize) -> usize {
+        let folding_factor = FoldingFactor::Constant(5);
+        let (num_rounds, _) = folding_factor
+            .compute_number_of_rounds(num_variables)
+            .expect("valid folding schedule");
+        let mut round_log_inv_rates = Vec::with_capacity(num_rounds);
+        let mut rate = 1;
+        for round in 0..num_rounds {
+            rate += folding_factor.at_round(round) - 1;
+            round_log_inv_rates.push(rate);
+        }
+        let params = ProtocolParameters {
+            security_level,
+            pow_bits: 0,
+            folding_factor: folding_factor.clone(),
+            soundness_type: SecurityAssumption::CapacityBound,
+            starting_log_inv_rate: 1,
+            round_log_inv_rates,
+        };
+        match WhirConfig::<EF, F, MyChallenger>::new(num_variables, params) {
+            Ok(config) => config.max_pow_bits(),
+            Err(WhirConfigError::PowBitsExceedBudget { required, .. }) => required,
+            Err(e) => panic!("unexpected WhirConfig error: {e:?}"),
+        }
     }
 
     pub fn commit(&self, evals: &[Goldilocks]) -> (Commitment, ProverData, OpeningProtocol) {
