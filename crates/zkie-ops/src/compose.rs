@@ -2161,6 +2161,71 @@ fn collect_weight_tensors(ops: &[Op]) -> Vec<T> {
 /// tensor and each weight batch, with opening proofs computed by the prover.
 /// The proof carries only commitment roots and openings -- never the committed
 /// tensor data -- so the verifier is root-only.
+/// A committed weight group whose prover data has been streamed to a cache
+/// file. Holds only public commitment data + rebuild params; the Merkle prover
+/// data is restored from the cache file during proving (no re-commit).
+#[derive(Clone)]
+pub struct CachedWeightBatch {
+    pub commitment: zkie_core::pcs::whir::Commitment,
+    pub arity: usize,
+    pub num_tables: usize,
+    pub num_vars: usize,
+    pub security: usize,
+    pub pow_bits: usize,
+    pub table_ids: Vec<T>,
+    pub cache_path: std::path::PathBuf,
+}
+
+/// Phase 1 (offline, once): commit every weight group and stream the Merkle
+/// prover data to a cache file. Returns only commitment + rebuild params; the
+/// heavy WHIR commitment (RS encoding + FFT + Merkle) is paid exactly once here.
+pub fn commit_model_weights(
+    store: &Store,
+    ops: &[Op],
+    cache_dir: &str,
+) -> Vec<CachedWeightBatch> {
+    let weight_tensors = collect_weight_tensors(ops);
+    let mut by_size: std::collections::BTreeMap<usize, Vec<(T, Vec<Goldilocks>)>> =
+        std::collections::BTreeMap::new();
+    for &t in &weight_tensors {
+        let v = store.materialize(t).into_owned();
+        by_size.entry(v.len()).or_default().push((t, v));
+    }
+    std::fs::create_dir_all(cache_dir).expect("create weight cache dir");
+
+    let mut batches = Vec::new();
+    for (len, group) in by_size {
+        let arity = len.trailing_zeros() as usize;
+        let refs: Vec<&[Goldilocks]> = group.iter().map(|(_, v)| v.as_slice()).collect();
+        let base_whir = zkie_core::pcs::whir::Whir::new_testing(arity);
+        let (commitment, prover_data, _protocol, batch_whir) = base_whir.commit_batch(&refs);
+        let num_vars = batch_whir.num_variables();
+        let num_tables = group.len();
+        let table_ids: Vec<T> = group.iter().map(|(t, _)| *t).collect();
+        let cache_path = std::path::PathBuf::from(cache_dir).join(format!(
+            "weight-a{arity}-g{}.bin",
+            batches.len()
+        ));
+        let file = std::fs::File::create(&cache_path).expect("create weight cache");
+        let mut writer = std::io::BufWriter::new(file);
+        bincode::serialize_into(&mut writer, &commitment).expect("write cache commitment");
+        zkie_core::pcs::whir::Whir::serialize_batch_prover_data_into(prover_data, &mut writer)
+            .expect("write cache prover data");
+        std::io::Write::flush(&mut writer).expect("flush weight cache");
+        batches.push(CachedWeightBatch {
+            commitment,
+            arity,
+            num_tables,
+            num_vars,
+            security: 32,
+            pow_bits: 10,
+            table_ids,
+            cache_path,
+        });
+    }
+    batches
+}
+
 /// A per-size-group weight batch opening: the multi-point reduction (one FRI
 /// proof + one sum-of-products sumcheck) for every weight claim in that group.
 /// Table indices, claim points, and claimed evals are stored explicitly so the
@@ -2170,8 +2235,6 @@ pub struct WeightBatchOpening {
     pub table_idxs: Vec<usize>,
     pub points: Vec<Vec<Goldilocks>>,
     pub claimed: Vec<Goldilocks>,
-    pub gamma: Goldilocks,
-    pub challenges: Vec<Goldilocks>,
     pub proof: Option<zkie_core::pcs::batch_open::BatchOpeningProof>,
 }
 
@@ -2191,6 +2254,7 @@ pub fn prove_committed_shard_dag(
     ops: &[Op],
     ops_per_shard: usize,
     whir: &zkie_core::pcs::whir::Whir,
+    cached_weights: &[CachedWeightBatch],
     rng: &mut impl ChallengeSource,
 ) -> CommittedShardDagProof {
     let plain = prove_shard_dag(store, ops, ops_per_shard);
@@ -2217,38 +2281,24 @@ pub fn prove_committed_shard_dag(
         cross_binds.push(sp);
     }
 
-    // Commit weights (grouped by size); open each weight claim at its claim
-    // point, then strip the prover's Merkle data from the proof.
-    let weight_tensors = collect_weight_tensors(ops);
-    let mut by_size: std::collections::BTreeMap<usize, Vec<(T, Vec<Goldilocks>)>> =
-        std::collections::BTreeMap::new();
-    for &t in &weight_tensors {
-        let v = store.materialize(t).into_owned();
-        by_size.entry(v.len()).or_default().push((t, v));
-    }
-    let mut weight_batch_ctxs: Vec<zkie_core::pcs::committed::BatchCtx> = Vec::new();
-    let mut weight_arities: Vec<usize> = Vec::new();
+    // Restore each weight group's Merkle prover data from its cache file (no
+    // re-commit), then reduce each group's claims to one FRI proof + one sumcheck.
     let mut weight_locs: std::collections::BTreeMap<T, (usize, usize)> =
         std::collections::BTreeMap::new();
-    let mut weight_tensors_by_group: Vec<Vec<Vec<Goldilocks>>> = Vec::new();
-    for (len, group) in by_size {
-        let whir = zkie_core::pcs::whir::Whir::new_testing(len.trailing_zeros() as usize);
-        let bi = weight_batch_ctxs.len();
-        {
-            let refs: Vec<&[Goldilocks]> = group.iter().map(|(_, v)| v.as_slice()).collect();
-            let batch = commit_weights_batch(&whir, &refs);
-            weight_batch_ctxs.push(batch);
+    let mut group_tensors: Vec<Vec<Vec<Goldilocks>>> = Vec::with_capacity(cached_weights.len());
+    for (bi, cw) in cached_weights.iter().enumerate() {
+        let tensors: Vec<Vec<Goldilocks>> = cw
+            .table_ids
+            .iter()
+            .map(|&t| store.materialize(t).into_owned())
+            .collect();
+        for (i, &t) in cw.table_ids.iter().enumerate() {
+            weight_locs.insert(t, (bi, i));
         }
-        for (i, (t, _)) in group.iter().enumerate() {
-            weight_locs.insert(*t, (bi, i));
-        }
-        weight_arities.push(len.trailing_zeros() as usize);
-        weight_tensors_by_group.push(group.into_iter().map(|(_, v)| v).collect());
+        group_tensors.push(tensors);
     }
 
-    // Vertical batch opening: collect each size group's weight claims in shard
-    // order, then reduce them to one FRI proof + one sumcheck per group.
-    let num_groups = weight_batch_ctxs.len();
+    let num_groups = cached_weights.len();
     let mut group_claims: Vec<Vec<(usize, Vec<Goldilocks>, Goldilocks)>> =
         vec![Vec::new(); num_groups];
     for shard in &plain.shards {
@@ -2258,57 +2308,71 @@ pub fn prove_committed_shard_dag(
             }
         }
     }
+
     let mut weight_batch_openings = Vec::with_capacity(num_groups);
-    for (bi, claims) in group_claims.iter().enumerate() {
-        let batch = &weight_batch_ctxs[bi];
-        let arity = weight_arities[bi];
+    let mut weight_batches = Vec::with_capacity(num_groups);
+    for (bi, cw) in cached_weights.iter().enumerate() {
+        let claims = &group_claims[bi];
         let table_idxs: Vec<usize> = claims.iter().map(|(ti, _, _)| *ti).collect();
         let points: Vec<Vec<Goldilocks>> = claims.iter().map(|(_, pt, _)| pt.clone()).collect();
         let claimed: Vec<Goldilocks> = claims.iter().map(|(_, _, ev)| *ev).collect();
+
+        // Verifier-side batch commitment (no prover data); prover-side Whir is
+        // reconstructed below from the same params.
+        weight_batches.push(WeightBatchCommit {
+            commitment: cw.commitment.clone(),
+            arity: cw.arity,
+            num_tables: cw.num_tables,
+            whir: zkie_core::pcs::whir::Whir::with_params(cw.num_vars, cw.security, cw.pow_bits),
+        });
+
         if claims.is_empty() {
-            // Committed but never opened (e.g. affine bias): no opening to prove.
             weight_batch_openings.push(WeightBatchOpening {
                 table_idxs,
                 points,
                 claimed,
-                gamma: Goldilocks::ZERO,
-                challenges: vec![],
                 proof: None,
             });
             continue;
         }
+
+        let batch_whir =
+            zkie_core::pcs::whir::Whir::with_params(cw.num_vars, cw.security, cw.pow_bits);
+        let mut reader = std::io::BufReader::new(
+            std::fs::File::open(&cw.cache_path).expect("open weight cache"),
+        );
+        let commitment: zkie_core::pcs::whir::Commitment =
+            bincode::deserialize_from(&mut reader).expect("read cache commitment");
+        let ref_slices: Vec<&[Goldilocks]> =
+            group_tensors[bi].iter().map(|v| v.as_slice()).collect();
+        let prover_data = batch_whir
+            .restore_batch_prover_data_from(&ref_slices, &mut reader)
+            .expect("restore cache prover data");
+        let protocol = batch_whir.batch_opening_protocol(cw.num_tables, cw.arity);
+        let ctx = zkie_core::pcs::committed::BatchCtx {
+            commitment,
+            prover_data,
+            protocol,
+            whir: batch_whir,
+            num_tables: cw.num_tables,
+        };
         let tensors: Vec<Vec<Goldilocks>> = claims
             .iter()
-            .map(|(ti, _, _)| weight_tensors_by_group[bi][*ti].clone())
+            .map(|(ti, _, _)| group_tensors[bi][*ti].clone())
             .collect();
-        let gamma = rng.field();
-        let challenges: Vec<Goldilocks> = (0..arity).map(|_| rng.field()).collect();
         let proof = zkie_core::pcs::batch_open::prove_batch_open_committed(
-            batch,
+            &ctx,
+            &table_idxs,
             &tensors,
             &points,
             &claimed,
-            gamma,
-            &challenges,
-        );
+        )
+        .expect("honest batch-open");
         weight_batch_openings.push(WeightBatchOpening {
             table_idxs,
             points,
             claimed,
-            gamma,
-            challenges,
             proof: Some(proof),
-        });
-    }
-
-    // Strip prover data: keep only the commitment root, protocol, and Whir.
-    let mut weight_batches = Vec::with_capacity(weight_batch_ctxs.len());
-    for (batch, arity) in weight_batch_ctxs.into_iter().zip(weight_arities) {
-        weight_batches.push(WeightBatchCommit {
-            commitment: batch.commitment,
-            arity,
-            num_tables: batch.num_tables,
-            whir: batch.whir,
         });
     }
 
@@ -2375,21 +2439,18 @@ pub fn verify_committed_shard_dag(
         };
         if opening.table_idxs.len() != opening.points.len()
             || opening.table_idxs.len() != opening.claimed.len()
-            || opening.challenges.len() != batch.arity
         {
             return false;
         }
         let protocol = batch.whir.opening_protocol(batch.arity, batch.num_tables);
         if !zkie_core::pcs::batch_open::verify_batch_open_committed(
-            &batch.commitment,
             &batch.whir,
+            &batch.commitment,
             &protocol,
             batch.num_tables,
             &opening.table_idxs,
             &opening.points,
             &opening.claimed,
-            opening.gamma,
-            &opening.challenges,
             opening_proof,
         ) {
             return false;
@@ -3374,7 +3435,8 @@ mod tests {
         ];
 
         let whir = Whir::new_testing(5); // m*d = 32 = 2^5
-        let mut proof = prove_committed_shard_dag(&mut store, &ops, 2, &whir, &mut rng);
+        let cached = commit_model_weights(&store, &ops, "/tmp/zkie-test-cache");
+        let mut proof = prove_committed_shard_dag(&mut store, &ops, 2, &whir, &cached, &mut rng);
         assert_eq!(proof.boundary_tensors.len(), 1);
         assert_eq!(proof.boundary_commitments.len(), 1);
         assert_eq!(proof.cross_binds.len(), 1);

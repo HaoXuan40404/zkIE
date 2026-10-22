@@ -208,15 +208,26 @@ pub struct BatchOpeningProof {
 #[allow(clippy::too_many_arguments)]
 pub fn prove_batch_open_committed(
     batch: &crate::pcs::committed::BatchCtx,
+    table_idxs: &[usize],
     tensors: &[Vec<Goldilocks>],
     points: &[Vec<Goldilocks>],
     claimed: &[Goldilocks],
-    gamma: Goldilocks,
-    challenges: &[Goldilocks],
-) -> BatchOpeningProof {
+) -> Result<BatchOpeningProof, String> {
     let n = tensors.len();
-    assert_eq!(points.len(), n);
-    assert_eq!(claimed.len(), n);
+    if table_idxs.len() != n || points.len() != n || claimed.len() != n {
+        return Err("batch-open length mismatch".to_owned());
+    }
+    let d = tensors[0].len().trailing_zeros() as usize;
+
+    // Fiat-Shamir: gamma + fresh point r bound to commitment + points + claimed.
+    let mut t = crate::common::transcript::Transcript::new(b"zkie-batch-open");
+    t.absorb(&bincode::serialize(&batch.commitment).map_err(|e| e.to_string())?);
+    for (pt, c) in points.iter().zip(claimed.iter()) {
+        t.absorb_fields(pt);
+        t.absorb_field(*c);
+    }
+    let gamma = t.field();
+    let challenges = t.field_vec(d);
 
     let mut weights: Vec<Vec<Goldilocks>> = Vec::with_capacity(n);
     let mut gamma_pow = Goldilocks::ONE;
@@ -229,18 +240,18 @@ pub fn prove_batch_open_committed(
         gamma_pow = gamma_pow * gamma;
     }
 
-    let sumcheck = sumcheck::prove_sum_of_products(&weights, tensors, claimed_sum, challenges);
+    let sumcheck = sumcheck::prove_sum_of_products(&weights, tensors, claimed_sum, &challenges);
     let (open, evals) = batch.whir.open_batch_multi(
         batch.prover_data.clone(),
         &batch.protocol,
         batch.num_tables,
-        challenges,
+        &challenges,
     );
-    BatchOpeningProof {
+    Ok(BatchOpeningProof {
         sumcheck,
         open,
         evals,
-    }
+    })
 }
 
 /// Verifier side of a multi-point batch opening. Verifies the one FRI proof
@@ -248,21 +259,33 @@ pub fn prove_batch_open_committed(
 /// committed tensor data. `table_idxs[i]` is the batch table index of claim i.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_batch_open_committed(
-    commitment: &crate::pcs::whir::Commitment,
     whir: &Whir,
+    commitment: &crate::pcs::whir::Commitment,
     protocol: &crate::pcs::whir::OpeningProtocol,
     num_tables: usize,
     table_idxs: &[usize],
     points: &[Vec<Goldilocks>],
     claimed: &[Goldilocks],
-    gamma: Goldilocks,
-    challenges: &[Goldilocks],
     proof: &BatchOpeningProof,
 ) -> bool {
     let n = table_idxs.len();
-    if n != points.len() || n != claimed.len() {
+    if n != points.len() || n != claimed.len() || n == 0 {
         return false;
     }
+    let d = points[0].len();
+
+    // Re-derive gamma + fresh point r (same Fiat-Shamir state as the prover).
+    let mut t = crate::common::transcript::Transcript::new(b"zkie-batch-open");
+    if bincode::serialize(commitment).is_err() {
+        return false;
+    }
+    t.absorb(&bincode::serialize(commitment).unwrap());
+    for (pt, c) in points.iter().zip(claimed.iter()) {
+        t.absorb_fields(pt);
+        t.absorb_field(*c);
+    }
+    let gamma = t.field();
+    let challenges = t.field_vec(d);
 
     let mut claimed_sum = Goldilocks::ZERO;
     let mut gamma_pow = Goldilocks::ONE;
@@ -271,13 +294,7 @@ pub fn verify_batch_open_committed(
         gamma_pow = gamma_pow * gamma;
     }
 
-    let evals = match whir.verify_batch_multi(
-        commitment,
-        &proof.open,
-        protocol,
-        num_tables,
-        challenges,
-    ) {
+    let evals = match whir.verify_batch_multi(commitment, &proof.open, protocol, num_tables, &challenges) {
         Ok(v) => v,
         Err(_) => return false,
     };
@@ -288,12 +305,12 @@ pub fn verify_batch_open_committed(
     let mut expected = Goldilocks::ZERO;
     let mut gamma_pow = Goldilocks::ONE;
     for i in 0..n {
-        let eq = mle::eq_poly(&points[i], challenges);
+        let eq = mle::eq_poly(&points[i], &challenges);
         expected = expected + gamma_pow * eq * evals[table_idxs[i]];
         gamma_pow = gamma_pow * gamma;
     }
 
-    sumcheck::verify_sum_of_products(&proof.sumcheck, claimed_sum, challenges, expected)
+    sumcheck::verify_sum_of_products(&proof.sumcheck, claimed_sum, &challenges, expected)
 }
 
 #[cfg(test)]
@@ -383,37 +400,29 @@ mod tests {
             num_tables: n,
         };
 
-        let mut r = XorShift64::new(99);
-        let gamma = r.field();
-        let challenges: Vec<Goldilocks> = (0..d).map(|_| r.field()).collect();
-        let proof = prove_batch_open_committed(&batch, &tensors, &points, &claimed, gamma, &challenges);
-
         let table_idxs: Vec<usize> = (0..n).collect();
+        let proof = prove_batch_open_committed(&batch, &table_idxs, &tensors, &points, &claimed).unwrap();
         assert!(verify_batch_open_committed(
-            &batch.commitment,
             &batch.whir,
+            &batch.commitment,
             &batch.protocol,
             n,
             &table_idxs,
             &points,
             &claimed,
-            gamma,
-            &challenges,
             &proof
         ));
 
         let mut bad = claimed.clone();
         bad[0] = bad[0] + Goldilocks::ONE;
         assert!(!verify_batch_open_committed(
-            &batch.commitment,
             &batch.whir,
+            &batch.commitment,
             &batch.protocol,
             n,
             &table_idxs,
             &points,
             &bad,
-            gamma,
-            &challenges,
             &proof
         ));
     }

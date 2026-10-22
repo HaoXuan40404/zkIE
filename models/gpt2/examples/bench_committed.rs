@@ -8,7 +8,7 @@ use zkie_core::common::field::{Goldilocks, XorShift64};
 use zkie_core::common::fixed_point::{from_i32, to_i32, to_i64};
 use zkie_core::pcs::whir::Whir;
 use zkie_models_gpt2::build_gpt2;
-use zkie_ops::compose::{prove_committed_shard_dag, verify_committed_shard_dag_bytes, Store};
+use zkie_ops::compose::{commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes, Store};
 
 fn load_i32(path: &str) -> Vec<Goldilocks> {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
@@ -42,7 +42,8 @@ fn main() {
     let mut rng = XorShift64::new(0xBEEF);
 
     let t0 = std::time::Instant::now();
-    let proof = prove_committed_shard_dag(&mut store, &ops, 176, &whir, &mut rng);
+    let cached = commit_model_weights(&store, &ops, "/tmp/zkie-weight-cache");
+    let proof = prove_committed_shard_dag(&mut store, &ops, 176, &whir, &cached, &mut rng);
     let prove_t = t0.elapsed();
 
     let t1 = std::time::Instant::now();
