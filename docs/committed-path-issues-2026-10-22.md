@@ -121,3 +121,21 @@ argmax 511/512 / proof 1.74GB. The projection bias and the normalization
 w/b were opened via `mle::eval` at their output point, matching the batch
 opening. Full weight commitment (matmul b, projection w+bias, layernorm w+b,
 layernormcentered w+b, rmsnorm w) is now sound.
+
+## Round 3 status (2026-10-22, boundary fix + e2e)
+
+- Fixed #2: boundary commitment now uses a per-boundary Whir
+  (Whir::with_params(arity, 90, 17)) instead of a single shared whir, so models
+  with non-uniform boundary sizes work.
+
+### End-to-end committed-path results (90-bit + pow_bits=17 + horizontal merge)
+
+| model | commit | prove | verify | argmax | proof |
+| --- | --- | --- | --- | --- | --- |
+| GPT-2 seq=512 | 16.52s | 68.24s | 10.98s | 511/512 | 1.74GB |
+| TimesFM seq=16 | 23.45s | 95.86s | 6.35s | - | 219MB |
+| Gemma 3 seq=16 | blocked | - | - | - | - |
+
+Gemma 3 is blocked by PowBitsExceedBudget (required 26 > budget 17): its lm_head
+is vocab 2^18 x H_PAD 2^10 = 2^28, which is larger than the 2^26 that
+pow_bits=17 supports. Horizontal merge cannot help (it is one tensor).
