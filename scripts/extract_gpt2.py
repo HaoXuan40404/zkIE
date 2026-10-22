@@ -64,9 +64,28 @@ def main():
     wte = inits["model.lm_head.weight"]  # [50257, 768] (tied with wte)
     wpe = inits["model.transformer.wpe.weight"]  # [1024, 768]
 
-    # fixed public input
-    rng = np.random.default_rng(0)
-    input_ids = rng.integers(0, VOCAB, (1, SEQ)).astype(np.int64)
+    # Real prompt + greedy autoregressive response (teacher-forced sequence).
+    # Generation runs on the same quantized ONNX weights the prover commits, so
+    # the one-pass argmax shift check is self-consistent. Requires the ONNX graph
+    # to have a dynamic sequence dimension (the common GPT-2 export case).
+    from transformers import GPT2Tokenizer
+
+    tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    prompt = os.environ.get("GPT2_PROMPT", "The sky is")
+    prompt_ids = tokenizer.encode(prompt)
+    assert len(prompt_ids) < SEQ, "prompt longer than SEQ"
+    gen_sess = ort.InferenceSession(os.path.join(MODELS, "gpt2/gpt2.onnx"))
+    gen_ids = prompt_ids[:]
+    for _ in range(SEQ - len(prompt_ids)):
+        cur = np.asarray([gen_ids], dtype=np.int64)
+        cur_mask = np.ones((1, len(gen_ids)), dtype=np.int64)
+        cur_pos = np.arange(len(gen_ids), dtype=np.int64).reshape(1, len(gen_ids))
+        lg = gen_sess.run(
+            ["logits"],
+            {"input_ids": cur, "attention_mask": cur_mask, "position_ids": cur_pos},
+        )[0]
+        gen_ids.append(int(lg[0, -1].argmax()))
+    input_ids = np.asarray([gen_ids], dtype=np.int64)
     attention_mask = np.ones((1, SEQ), dtype=np.int64)
     position_ids = np.arange(SEQ, dtype=np.int64).reshape(1, SEQ)
 

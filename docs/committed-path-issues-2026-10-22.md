@@ -245,8 +245,10 @@ right-shift (Scale shift 13), and the Argmax range-check is 27 bits. The proven
 index now matches the post-hoc argmax (n_mismatch=0).
 
 Remaining:
-- Real prompt + autoregressive generation (extract_gpt2.py exports the new
-  tokens/pos_emb but generation needs onnx + a tokenizer on a machine that has
-  them).
-- Gemma 3 / DeepSeek reuse (each swaps embedding/position encoding; Argmax +
-  shift stay the same).
+- Real generation is now written in extract_gpt2.py (prompt -> greedy
+  autoregressive response on the quantized ONNX weights, exports tokens/
+  pos_emb/gt); running it needs onnx + onnxruntime + transformers on a machine
+  that has them (the test box does not).
+- Gemma 3 / DeepSeek reuse: wire tokens->wte lookup + Argmax + shift into each
+  builder (Gemma uses RoPE, DeepSeek MLA; the Argmax/verify_sequence_shift
+  primitives stay the same).
