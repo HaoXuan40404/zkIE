@@ -464,13 +464,17 @@ fn build_moe(
     let eu_full = store.push_mmap(eu.clone(), 0, N_ROUTED * H * MOE_PAD);
     let ed_full = store.push_mmap(ed.clone(), 0, N_ROUTED * MOE_PAD * H);
 
-    // gate projection: g = seg_z @ eg[expert_of]
+    // gate projection: g = rd(seg_z @ eg[expert_of], 2^16)
+    let g_raw = store.push(vec![]);
+    ops.push(Op::GatherMatMul { a: seg_z, expert_of: expert_of_pad, w: eg_full, c: g_raw, s: s_pad, k: H, n: MOE_PAD, n_experts: N_ROUTED });
     let g = store.push(vec![]);
-    ops.push(Op::GatherMatMul { a: seg_z, expert_of: expert_of_pad, w: eg_full, c: g, s: s_pad, k: H, n: MOE_PAD, n_experts: N_ROUTED });
+    ops.push(Op::Scale { x: g_raw, out: g, factor: 1, shift: 16 });
 
-    // up projection: u = seg_z @ eu[expert_of]
+    // up projection: u = rd(seg_z @ eu[expert_of], 2^16)
+    let u_raw = store.push(vec![]);
+    ops.push(Op::GatherMatMul { a: seg_z, expert_of: expert_of_pad, w: eu_full, c: u_raw, s: s_pad, k: H, n: MOE_PAD, n_experts: N_ROUTED });
     let u = store.push(vec![]);
-    ops.push(Op::GatherMatMul { a: seg_z, expert_of: expert_of_pad, w: eu_full, c: u, s: s_pad, k: H, n: MOE_PAD, n_experts: N_ROUTED });
+    ops.push(Op::Scale { x: u_raw, out: u, factor: 1, shift: 16 });
 
     // silu(g) * u
     let silu_idx = store.push_idx(vec![]);
@@ -480,9 +484,11 @@ fn build_moe(
     let act = store.push(vec![]);
     ops.push(Op::ScaleVec { x: silu, scale: u, out: act, shift: 16 });
 
-    // down projection: d = act @ ed[expert_of]
+    // down projection: d = rd(act @ ed[expert_of], 2^16)
+    let d_raw = store.push(vec![]);
+    ops.push(Op::GatherMatMul { a: act, expert_of: expert_of_pad, w: ed_full, c: d_raw, s: s_pad, k: MOE_PAD, n: H, n_experts: N_ROUTED });
     let d = store.push(vec![]);
-    ops.push(Op::GatherMatMul { a: act, expert_of: expert_of_pad, w: ed_full, c: d, s: s_pad, k: MOE_PAD, n: H, n_experts: N_ROUTED });
+    ops.push(Op::Scale { x: d_raw, out: d, factor: 1, shift: 16 });
 
     // gather per-position gate values by (token_id, expert_of)
     let idx_gate = store.push_idx(vec![]);
@@ -490,9 +496,14 @@ fn build_moe(
     let gate_pos = store.push(vec![]);
     ops.push(Op::Lookup { idx: idx_gate, out: gate_pos, table: gate });
 
-    // weighted gather back to token-major
+    // weighted = rd(d * gate_pos, 2^16), then unweighted gather back to token-major
+    let weighted_raw = store.push(vec![]);
+    ops.push(Op::BroadcastScale { x: d, scale: gate_pos, out: weighted_raw, h: H });
+    let weighted = store.push(vec![]);
+    ops.push(Op::Scale { x: weighted_raw, out: weighted, factor: 1, shift: 16 });
+    let gate_ones = store.push(vec![Goldilocks::ONE; s_pad]);
     let mut out = store.push(vec![]);
-    ops.push(Op::Gather { weighted: d, token_id: token_id_pad, gate: gate_pos, out, m, h: H });
+    ops.push(Op::Gather { weighted, token_id: token_id_pad, gate: gate_ones, out, m, h: H });
     // shared experts (always active)
     let sg_w = store.push(shared_g);
     let su_w = store.push(shared_u);
@@ -578,12 +589,13 @@ pub fn build_deepseek(
     let rsqrt_table = load_i32("models/gpt2/weights/rsqrt_table_i32.bin");
     let silu_table = load_i32(&format!("{dir}/silu_table_i32.bin"));
     let lm_head = load_i32(&format!("{dir}/lm_head_i32.bin"));
+    let embed_tokens = load_i32(&format!("{dir}/embed_tokens_i32.bin"));
     let tokens_raw = load_i32(&format!("{dir}/tokens_i32.bin"));
     let tokens = store.push_idx(tokens_raw.iter().map(|&v| to_i32(v) as u32).collect());
     let emb_idx: Vec<u32> = (0..m)
         .flat_map(|i| {
             let ti = to_i32(tokens_raw[i]) as u32;
-            (0..H).map(move |d| (d * VOCAB_PAD) as u32 + ti)
+            (0..H).map(move |d| ((ti as usize) * H + d) as u32)
         })
         .collect();
     let emb_idx_t = store.push_idx(emb_idx);
@@ -591,7 +603,7 @@ pub fn build_deepseek(
     ops.push(Op::Lookup {
         idx: emb_idx_t,
         out: token_emb,
-        table: store.push(lm_head.clone()),
+        table: store.push(embed_tokens.clone()),
     });
     let final_norm = load_i32(&format!("{dir}/final_norm_i32.bin"));
     let cos = load_i32(&format!("{dir}/rope_cos_i32.bin"));

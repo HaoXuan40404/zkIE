@@ -38,7 +38,7 @@ fn main() {
     let dir = "models/deepseek-v2-lite/weights";
     let mut store = Store::new();
     let mut ops = Vec::new();
-    let (_x0, logits) = build_deepseek(&mut store, &mut ops, dir, m, 16);
+    let (_x0, logits, _tokens, _t) = build_deepseek(&mut store, &mut ops, dir, m, 16);
     println!("total ops: {}", ops.len());
 
     let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
