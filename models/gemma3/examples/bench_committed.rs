@@ -7,7 +7,8 @@ use zkie_core::common::fixed_point::{from_i32, to_i32, to_i64};
 use zkie_core::pcs::whir::Whir;
 use zkie_models_gemma3::{build_gemma3, VOCAB};
 use zkie_ops::compose::{
-    commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes, Store,
+    commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes,
+    verify_sequence_shift, Store,
 };
 
 fn load_i32(path: &str) -> Vec<Goldilocks> {
@@ -35,7 +36,7 @@ fn main() {
 
     let mut store = Store::new();
     let mut ops = Vec::new();
-    let (_x0, logits) = build_gemma3(&mut store, &mut ops, dir, m, shift);
+    let (_x0, logits, tokens, t) = build_gemma3(&mut store, &mut ops, dir, m, shift);
     let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
 
     // Boundary tensors are seq x H_PAD = 16 x 1024 = 2^14.
@@ -47,7 +48,7 @@ fn main() {
     let commit_t = t0.elapsed();
 
     let t1 = std::time::Instant::now();
-    let proof = prove_committed_shard_dag(&mut store, &ops, 53, &whir, &cached, &mut rng);
+    let proof = prove_committed_shard_dag(&mut store, &ops, 53, &whir, &cached, &mut rng, tokens, t);
     let prove_t = t1.elapsed();
 
     let t2 = std::time::Instant::now();
@@ -75,6 +76,29 @@ fn main() {
         }
     }
 
+    // Argmax-op sanity: the proven index must match the post-hoc argmax of the
+    // scaled logits (the actual input to the Argmax op).
+    let arg_idx = &store.idx[t];
+    let mut argmax_ok = true;
+    for i in 0..m {
+        let mut best = 0usize;
+        let mut best_v = to_i64(lg[i * VOCAB]) / 8192;
+        for j in 1..VOCAB {
+            let v = to_i64(lg[i * VOCAB + j]) / 8192;
+            if v > best_v {
+                best_v = v;
+                best = j;
+            }
+        }
+        if arg_idx[i] as usize != best {
+            argmax_ok = false;
+        }
+    }
+    println!("argmax_op_matches={argmax_ok}");
+    println!(
+        "sequence_shift_ok={}",
+        verify_sequence_shift(&store.idx[tokens], &store.idx[t], &[])
+    );
     println!(
         "commit={commit_t:?} prove={prove_t:?} verify={verify_t:?} argmax={matches}/{m} rss={}kB proof_bytes={}",
         peak_rss_kb(),

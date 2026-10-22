@@ -7,7 +7,7 @@ use std::fs;
 use std::sync::Arc;
 
 use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing};
-use zkie_core::common::fixed_point::from_i32;
+use zkie_core::common::fixed_point::{from_i32, to_i32};
 use zkie_core::common::weights_io::WeightMmap;
 use zkie_ops::compose::{causal_mask, Op, Store};
 
@@ -416,19 +416,34 @@ pub fn build_gemma3(
     dir: &str,
     m: usize,
     shift: u32,
-) -> (usize, usize) {
+) -> (usize, usize, usize, usize) {
     let exp_table = load_i32("models/gpt2/weights/exp_table_i32.bin");
     let rsqrt_table = load_i32("models/gpt2/weights/rsqrt_table_i32.bin");
     let gelu_table = load_i32("models/gpt2/weights/gelu_table_i32.bin");
-    let x0 = load_i32(&format!("{dir}/x0_i32.bin"));
     let lm_head = Arc::new(WeightMmap::open(&format!("{dir}/lm_head_i32.bin")).unwrap());
+    let tokens_raw = load_i32(&format!("{dir}/tokens_i32.bin"));
+    let tokens = store.push_idx(tokens_raw.iter().map(|&v| to_i32(v) as u32).collect());
+    let emb_idx: Vec<u32> = (0..m)
+        .flat_map(|i| {
+            let ti = to_i32(tokens_raw[i]) as u32;
+            (0..H_PAD).map(move |d| (d * VOCAB) as u32 + ti)
+        })
+        .collect();
+    let emb_idx_t = store.push_idx(emb_idx);
+    let wte_owned = store.push(load_i32(&format!("{dir}/lm_head_i32.bin")));
+    let token_emb = store.push(vec![]);
+    ops.push(Op::Lookup {
+        idx: emb_idx_t,
+        out: token_emb,
+        table: wte_owned,
+    });
     let final_norm = load_i32(&format!("{dir}/final_norm_i32.bin"));
     let cos_local = load_i32(&format!("{dir}/rope_cos_local_i32.bin"));
     let sin_local = load_i32(&format!("{dir}/rope_sin_local_i32.bin"));
     let cos_global = load_i32(&format!("{dir}/rope_cos_global_i32.bin"));
     let sin_global = load_i32(&format!("{dir}/rope_sin_global_i32.bin"));
 
-    let x0_t = store.push(x0[..m * H_PAD].to_vec());
+    let x0_t = token_emb;
     let exp_t = store.push(exp_table);
     let rsqrt_t = store.push(rsqrt_table);
     let gelu_t = store.push(gelu_table);
@@ -471,5 +486,31 @@ pub fn build_gemma3(
         k: H_PAD,
         n: VOCAB,
     });
-    (x0_t, logits)
+    // Bound the logits for the argmax range check (VOCAB is 2^18, so no padding
+    // mask is needed). The exact shift/range_bits follow the GPT-2 calibration.
+    let logits_scaled = store.push(vec![]);
+    ops.push(Op::Scale {
+        x: logits,
+        out: logits_scaled,
+        factor: 1,
+        shift: 13,
+    });
+    let arg_sel = store.push(vec![]);
+    let arg_thr = store.push(vec![]);
+    let arg_gate = store.push(vec![]);
+    let arg_d1 = store.push(vec![]);
+    let arg_d2 = store.push(vec![]);
+    let t = store.push_idx(vec![]);
+    ops.push(Op::Argmax {
+        x: logits_scaled,
+        sel: arg_sel,
+        thr: arg_thr,
+        gate: arg_gate,
+        d1: arg_d1,
+        d2: arg_d2,
+        out: t,
+        m,
+        n: VOCAB,
+    });
+    (x0_t, logits, tokens, t)
 }
