@@ -1,28 +1,53 @@
 //! Per-position (batched) matmul: `g[pos][j] = sum_d seg[pos][d] * w[pos][d][j]`,
 //! where each position `pos` carries its own `K x N` weight matrix (already
-//! gathered from the per-expert weights). This is the expert-major counterpart
-//! of the ordinary matmul: the sumcheck is the same two-input product sumcheck,
-//! but the weight slice is a data-dependent gather rather than a `partial_eval`
-//! of a matrix shared by every row.
+//! gathered from the per-expert weights).
+//!
+//! The ordinary single-contraction sumcheck does not apply here: with a shared
+//! weight the identity `C~(u,v) = sum_d A~(u,d) B~(d,v)` is multilinear in `u`
+//! because `B~` does not depend on `u`; with a per-position weight both factors
+//! depend on `u`, so that identity is degree-2 in `u` and is not the MLE of `g`.
+//!
+//! The sound reduction is an eq-selector virtual sumcheck over the `(S, K)`
+//! domain: fix the output variable `j = v`, then
+//!
+//!   G~(u,v) = sum_{pos,d} seg[pos][d] * w[pos][d][v] * eq(pos, u).
+//!
+//! This is a single triple-product virtual sumcheck (domain `S*K`), and it
+//! reduces to claims on `seg` (at the full challenge) and `w` (at `v || ch`),
+//! plus the public `eq(pos, u)` selector.
 
 use crate::common::field::{Goldilocks, PrimeCharacteristicRing};
-use crate::common::sumcheck::{self, SumcheckProof};
+use crate::common::mle;
+use crate::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BatchedMatmulProof {
     pub claimed: Goldilocks,
-    pub sumcheck: SumcheckProof,
+    pub sumcheck: VirtualProof,
 }
 
-/// Prove `g[pos][j] = sum_{d in [0,K)} seg[pos][d] * w[pos][d][j]`.
+fn broadcast_eq(eq_u: &[Goldilocks], k: usize) -> Vec<Goldilocks> {
+    let s = eq_u.len();
+    let mut out = vec![Goldilocks::ZERO; s * k];
+    for pos in 0..s {
+        for d in 0..k {
+            out[pos * k + d] = eq_u[pos];
+        }
+    }
+    out
+}
+
+fn terms() -> Vec<(Goldilocks, Vec<usize>)> {
+    vec![(Goldilocks::ONE, vec![0usize, 1, 2])]
+}
+
+/// Prove `g[pos][j] = sum_d seg[pos][d] * w[pos][d][j]` at the random MLE point
+/// `(u, v)`.
 ///
-/// Layouts (row-major):
-/// - `seg`: `S x K`
-/// - `w`:   `S x K x N` (per-position weight)
-/// - `g`:   `S x N`
-///
-/// `pos` and `j` fix the output coordinate; `ch_d` carries
-/// `K.trailing_zeros()` contraction challenges. `K` must be a power of two.
+/// Layouts (row-major): `seg` = `S x K`, `w` = `S x K x N`, `g` = `S x N`.
+/// `u` fixes the `S` position variables, `v` fixes the `N` output variables, and
+/// `ch` carries `S + K` sumcheck challenges (the `(pos, d)` domain). `S`, `K`,
+/// `N` must be powers of two.
 pub fn prove(
     seg: &[Goldilocks],
     w: &[Goldilocks],
@@ -30,31 +55,56 @@ pub fn prove(
     s: usize,
     k: usize,
     n: usize,
-    pos: usize,
-    j: usize,
-    ch_d: &[Goldilocks],
+    u: &[Goldilocks],
+    v: &[Goldilocks],
+    ch: &[Goldilocks],
 ) -> BatchedMatmulProof {
     assert_eq!(seg.len(), s * k);
     assert_eq!(w.len(), s * k * n);
     assert_eq!(g.len(), s * n);
-    assert!(pos < s);
-    assert!(j < n);
-    assert_eq!(ch_d.len(), k.trailing_zeros() as usize);
+    assert_eq!(u.len(), s.trailing_zeros() as usize);
+    assert_eq!(v.len(), n.trailing_zeros() as usize);
+    assert_eq!(ch.len(), (s * k).trailing_zeros() as usize);
 
-    let a = &seg[pos * k..(pos + 1) * k];
-    let b: Vec<Goldilocks> = (0..k).map(|d| w[pos * k * n + d * n + j]).collect();
-    let claimed = g[pos * n + j];
-    let sumcheck = sumcheck::prove(a, &b, claimed, ch_d);
+    let w_v = mle::partial_eval(w, v); // S x K, index pos*K + d
+    let eq_u = mle::eq_evals(u); // S
+    let eq_b = broadcast_eq(&eq_u, k); // S x K
+
+    let mut gp = v.to_vec();
+    gp.extend_from_slice(u);
+    let claimed = mle::eval(g, &gp);
+
+    let mles: [&[Goldilocks]; 3] = [seg, &w_v, &eq_b];
+    let sumcheck = prove_virtual(&mles, &terms(), claimed, ch);
     BatchedMatmulProof { claimed, sumcheck }
 }
 
-pub fn verify(proof: &BatchedMatmulProof, ch_d: &[Goldilocks]) -> bool {
-    sumcheck::verify(
+/// Verify the sumcheck, recomputing the public `eq(pos, u)` selector. The
+/// `seg`/`w` endpoint evals carried by the proof are bound to their commitments
+/// by the caller (op layer), matching the ordinary-matmul convention.
+pub fn verify(
+    proof: &BatchedMatmulProof,
+    s: usize,
+    k: usize,
+    u: &[Goldilocks],
+    ch: &[Goldilocks],
+) -> bool {
+    assert_eq!(u.len(), s.trailing_zeros() as usize);
+    assert_eq!(ch.len(), (s * k).trailing_zeros() as usize);
+    let eq_u = mle::eq_evals(u);
+    let eq_b = broadcast_eq(&eq_u, k);
+    let eq_final = mle::eval(&eq_b, ch);
+    let final_evals = vec![
+        proof.sumcheck.final_evals[0],
+        proof.sumcheck.final_evals[1],
+        eq_final,
+    ];
+    verify_virtual(
         &proof.sumcheck,
+        &terms(),
         proof.claimed,
-        ch_d,
-        proof.sumcheck.f_eval,
-        proof.sumcheck.h_eval,
+        ch,
+        &final_evals,
     )
 }
 
@@ -141,20 +191,24 @@ mod tests {
         }
         assert_eq!(g, reference);
 
-        let ch_d: Vec<Goldilocks> = (0..k.trailing_zeros() as usize)
+        let u: Vec<Goldilocks> = (0..s.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let v: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let ch: Vec<Goldilocks> = (0..(s * k).trailing_zeros() as usize)
             .map(|_| rng.field())
             .collect();
-        for pos in 0..s {
-            for j in 0..n {
-                let proof = prove(&seg, &w, &g, s, k, n, pos, j, &ch_d);
-                assert!(verify(&proof, &ch_d));
-            }
-        }
+
+        let proof = prove(&seg, &w, &g, s, k, n, &u, &v, &ch);
+        assert!(verify(&proof, s, k, &u, &ch));
+
+        // endpoint evals match the committed tensors at the expected points
+        let w_v = mle::partial_eval(&w, &v);
+        assert_eq!(proof.sumcheck.final_evals[0], mle::eval(&seg, &ch));
+        assert_eq!(proof.sumcheck.final_evals[1], mle::eval(&w_v, &ch));
 
         // tamper the claimed output value -> reject
-        let mut bad = prove(&seg, &w, &g, s, k, n, 0, 0, &ch_d);
+        let mut bad = proof;
         bad.claimed = bad.claimed + Goldilocks::ONE;
-        assert!(!verify(&bad, &ch_d));
+        assert!(!verify(&bad, s, k, &u, &ch));
     }
 }
 
