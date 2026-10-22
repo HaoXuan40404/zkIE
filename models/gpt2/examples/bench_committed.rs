@@ -83,4 +83,17 @@ fn main() {
         peak_rss_kb(),
         bytes.len()
     );
+    let shards_b = bincode::serialize(&proof.shards).unwrap().len();
+    let wbo_b = bincode::serialize(&proof.weight_batch_openings).unwrap().len();
+    let bound_b = bincode::serialize(&(&proof.boundary_commitments, &proof.cross_binds)).unwrap().len();
+    println!("breakdown: shards={} weight_openings={} boundary={}", shards_b, wbo_b, bound_b);
+    for (i, wbo) in proof.weight_batch_openings.iter().enumerate() {
+        if let Some(p) = &wbo.proof {
+            println!("  group{i}: open={} sumcheck={} evals={} n_claims={}",
+                bincode::serialize(&p.open).unwrap().len(),
+                bincode::serialize(&p.sumcheck).unwrap().len(),
+                bincode::serialize(&p.evals).unwrap().len(),
+                wbo.table_idxs.len());
+        }
+    }
 }

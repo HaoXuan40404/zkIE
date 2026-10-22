@@ -61,10 +61,14 @@ weight commitment (including lm_head). Release, 64-thread CPU.
 | phase | time |
 | --- | --- |
 | commit (first run, writes cache) | 16.66 s |
-| prove (restore + batch open) | 51.87 s |
-| verify | 68.11 s |
+| prove (restore + batch open) | 51.17 s |
+| verify | 8.84 s |
 
 argmax 511/512 (one near-tie fixed-point), peak RSS ~30.3 GB, proof bytes ~1.73 GB.
+
+The committed verify was initially single-threaded (`for ... in ranges.iter()`);
+parallelizing the shard loop (`ranges.par_iter()`, like the plain path) dropped
+verify from ~66.9s to ~8.84s (shard sumcheck verify 64.5s -> 6.4s).
 
 Note: an earlier argmax=0/512 was a bench bug (the argmax loop used vocab 65536
 instead of the real 50257); the committed path itself was correct.

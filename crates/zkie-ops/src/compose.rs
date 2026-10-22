@@ -2416,10 +2416,14 @@ pub fn verify_committed_shard_dag(
     {
         return false;
     }
-    for (i, (s, e)) in ranges.iter().enumerate() {
-        if !verify_shard(tables, &ops[*s..*e], &proof.shards[i]) {
-            return false;
-        }
+    let shards = &proof.shards;
+    let all_ok = ranges
+        .par_iter()
+        .enumerate()
+        .map(|(i, &(s, e))| verify_shard(tables, &ops[s..e], &shards[i]))
+        .all(|ok| ok);
+    if !all_ok {
+        return false;
     }
 
     for (i, &t) in proof.boundary_tensors.iter().enumerate() {
