@@ -9,7 +9,8 @@ use zkie_core::common::fixed_point::{from_i32, to_i32, to_i64};
 use zkie_core::pcs::whir::Whir;
 use zkie_models_gpt2::build_gpt2;
 use zkie_ops::compose::{
-    commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes, Store,
+    commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes,
+    verify_sequence_shift, Store,
 };
 
 fn load_i32(path: &str) -> Vec<Goldilocks> {
@@ -43,7 +44,7 @@ fn main() {
 
     let mut store = Store::new();
     let mut ops = Vec::new();
-    let (_x0, logits, _tokens, t) = build_gpt2(&mut store, &mut ops, dir, m, shift);
+    let (_x0, logits, tokens, t) = build_gpt2(&mut store, &mut ops, dir, m, shift);
     let gt = load_i32(&format!("{dir}/gt_argmax_512_i32.bin"));
 
     // Boundary tensors are m x D = 512 x 1024 = 2^19.
@@ -56,7 +57,7 @@ fn main() {
     let commit_t = t0.elapsed();
 
     let t1 = std::time::Instant::now();
-    let proof = prove_committed_shard_dag(&mut store, &ops, 176, &whir, &cached, &mut rng);
+    let proof = prove_committed_shard_dag(&mut store, &ops, 176, &whir, &cached, &mut rng, tokens, t);
     let prove_t = t1.elapsed();
 
     let t2 = std::time::Instant::now();
@@ -104,6 +105,12 @@ fn main() {
         }
     }
     println!("argmax_op_matches={argmax_ok}");
+    // Sequence self-consistency is a verifier-side check on the public tokens/argmax
+    // (only meaningful for a real generated sequence; random tokens will not hold).
+    println!(
+        "sequence_shift_ok={}",
+        verify_sequence_shift(&store.idx[tokens], &store.idx[t], &[])
+    );
     println!(
         "commit={commit_t:?} prove={prove_t:?} verify={verify_t:?} argmax={matches}/{m} rss={}kB proof_bytes={}",
         peak_rss_kb(),

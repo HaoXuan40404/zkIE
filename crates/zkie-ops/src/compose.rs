@@ -2356,6 +2356,8 @@ pub struct CommittedShardDagProof {
     pub weight_batches: Vec<WeightBatchCommit>,
     pub weight_batch_openings: Vec<WeightBatchOpening>,
     pub weight_locs: std::collections::BTreeMap<T, (usize, usize)>,
+    pub tokens: Vec<u32>,
+    pub argmax_t: Vec<u32>,
 }
 
 pub fn prove_committed_shard_dag(
@@ -2365,6 +2367,8 @@ pub fn prove_committed_shard_dag(
     _whir: &zkie_core::pcs::whir::Whir,
     cached_weights: &[CachedWeightBatch],
     rng: &mut impl ChallengeSource,
+    tokens_t: T,
+    argmax_t: T,
 ) -> CommittedShardDagProof {
     let plain = prove_shard_dag(store, ops, ops_per_shard);
     let boundary_tensors = plain.cross_tensors.clone();
@@ -2495,6 +2499,8 @@ pub fn prove_committed_shard_dag(
         weight_batches,
         weight_batch_openings,
         weight_locs,
+        tokens: store.idx[tokens_t].clone(),
+        argmax_t: store.idx[argmax_t].clone(),
     }
 }
 
@@ -2575,6 +2581,25 @@ pub fn verify_committed_shard_dag(
 
 /// Deserialize a committed shard-DAG proof and verify it, root-only: the proof
 /// carries commitment roots and opening proofs, never the committed tensor data.
+/// Verify the one-pass sequence self-consistency: the claimed sequence starts
+/// with the user prompt, and every generated token equals the argmax prediction
+/// of the previous position (teacher forcing). `tokens` is the full claimed
+/// sequence [prompt + response], `argmax_t` is the model's argmax per position.
+pub fn verify_sequence_shift(tokens: &[u32], argmax_t: &[u32], prompt: &[u32]) -> bool {
+    if prompt.len() > tokens.len() || argmax_t.len() != tokens.len() {
+        return false;
+    }
+    if tokens[..prompt.len()] != *prompt {
+        return false;
+    }
+    for i in prompt.len().saturating_sub(1)..tokens.len().saturating_sub(1) {
+        if argmax_t[i] != tokens[i + 1] {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn verify_committed_shard_dag_bytes(
     proof_bytes: &[u8],
     tables: &[&[Goldilocks]],
@@ -2883,6 +2908,23 @@ pub fn build_gpt2_layer(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn verify_sequence_shift_roundtrip() {
+        // tokens = [prompt=10,20, generated=30,40,50]
+        let tokens: Vec<u32> = vec![10, 20, 30, 40, 50];
+        let prompt: Vec<u32> = vec![10, 20];
+        // argmax at i predicts token i+1 for i in [prompt.len()-1, m-1)
+        let argmax_t: Vec<u32> = vec![0, 30, 40, 50, 0];
+        assert!(verify_sequence_shift(&tokens, &argmax_t, &prompt));
+        // tamper a shift edge -> reject
+        let mut bad = argmax_t.clone();
+        bad[1] = 999;
+        assert!(!verify_sequence_shift(&tokens, &bad, &prompt));
+        // tamper the prefix -> reject
+        let mut bad_prompt = prompt.clone();
+        bad_prompt[0] = 999;
+        assert!(!verify_sequence_shift(&tokens, &argmax_t, &bad_prompt));
+    }
     use super::*;
     use zkie_core::common::field::PrimeCharacteristicRing;
 
@@ -3392,7 +3434,10 @@ mod tests {
 
         let whir = Whir::new_testing(5); // m*d = 32 = 2^5
         let cached = commit_model_weights(&store, &ops, "/tmp/zkie-test-cache");
-        let mut proof = prove_committed_shard_dag(&mut store, &ops, 2, &whir, &cached, &mut rng);
+        let tokens_t = store.push_idx(vec![]);
+        let argmax_t = store.push_idx(vec![]);
+        let mut proof =
+            prove_committed_shard_dag(&mut store, &ops, 2, &whir, &cached, &mut rng, tokens_t, argmax_t);
         assert_eq!(proof.boundary_tensors.len(), 1);
         assert_eq!(proof.boundary_commitments.len(), 1);
         assert_eq!(proof.cross_binds.len(), 1);
