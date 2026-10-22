@@ -348,8 +348,6 @@ fn build_moe(
     exp_t: usize,
 ) -> usize {
     let dir = "models/deepseek-v2-lite/weights";
-    let gate_mask = load_i32(&format!("{dir}/L{layer}_gate_i32.bin"));
-
     let router = load_i32(&format!("{dir}/L{layer}_router_i32.bin"));
     let router_t = store.push(router);
     let logits = store.push(vec![]);
@@ -427,98 +425,86 @@ fn build_moe(
         .unwrap(),
     );
 
-    let routed: Vec<usize> = (0..N_ROUTED)
-        .filter(|&e| (0..m).any(|t| gate_mask[t * N_ROUTED + e] != Goldilocks::ZERO))
-        .collect();
-    let mut acc: Option<usize> = None;
-    for expert in routed {
-        let eg_w = store.push_mmap(eg.clone(), expert * H * MOE_PAD, H * MOE_PAD);
-        let eu_w = store.push_mmap(eu.clone(), expert * H * MOE_PAD, H * MOE_PAD);
-        let ed_w = store.push_mmap(ed.clone(), expert * MOE_PAD * H, MOE_PAD * H);
-        let g = store.push(vec![]);
-        let g_rem = store.push(vec![]);
-        let u = store.push(vec![]);
-        let u_rem = store.push(vec![]);
-        let silu_idx = store.push_idx(vec![]);
-        let silu = store.push(vec![]);
-        let act = store.push(vec![]);
-        let d = store.push(vec![]);
-        let d_rem = store.push(vec![]);
-        ops.push(Op::Projection {
-            x,
-            w: eg_w,
-            bias: store.push(zeros(m * MOE_PAD)),
-            out: g,
-            rem: g_rem,
-            m,
-            k: H,
-            n: MOE_PAD,
-            shift,
-        });
-        ops.push(Op::Projection {
-            x,
-            w: eu_w,
-            bias: store.push(zeros(m * MOE_PAD)),
-            out: u,
-            rem: u_rem,
-            m,
-            k: H,
-            n: MOE_PAD,
-            shift,
-        });
-        ops.push(Op::GeluIndex {
-            x: g,
-            out: silu_idx,
-            offset: 1 << 23,
-            table_len: 1 << 24,
-        });
-        ops.push(Op::Lookup {
-            idx: silu_idx,
-            out: silu,
-            table: silu_t,
-        });
-        ops.push(Op::ScaleVec {
-            x: silu,
-            scale: u,
-            out: act,
-            shift: 16,
-        });
-        ops.push(Op::Projection {
-            x: act,
-            w: ed_w,
-            bias: store.push(zeros(m * H)),
-            out: d,
-            rem: d_rem,
-            m,
-            k: MOE_PAD,
-            n: H,
-            shift,
-        });
-        let weighted = store.push(vec![]);
-        ops.push(Op::ScaleGate {
-            x: d,
-            gate,
-            col: expert,
-            out: weighted,
-            m,
-            n: N_ROUTED,
-            h: H,
-            shift: 16,
-        });
-        match acc {
-            None => acc = Some(weighted),
-            Some(a) => {
-                let s = store.push(vec![]);
-                ops.push(Op::Add {
-                    a,
-                    b: weighted,
-                    c: s,
-                });
-                acc = Some(s);
-            }
-        }
+    // ---- expert-major FFN (scatter -> per-expert gather -> FFN -> weighted gather) ----
+    let s = 6 * m; // top-6: exactly 6 active (token, expert) pairs per token
+    let s_pad = s.next_power_of_two();
+
+    // scatter routed tokens into expert-major order (permutation proof)
+    let token_id = store.push_idx(vec![]);
+    let expert_of = store.push_idx(vec![]);
+    ops.push(Op::Scatter {
+        sel,
+        token_id,
+        expert_of,
+        m,
+        n: N_ROUTED,
+    });
+
+    // pad token_id / expert_of to s_pad (dummy entries -> 0)
+    let token_id_pad = store.push_idx(vec![]);
+    let expert_of_pad = store.push_idx(vec![]);
+    ops.push(Op::PadIdx { base: token_id, out: token_id_pad, len: s_pad });
+    ops.push(Op::PadIdx { base: expert_of, out: expert_of_pad, len: s_pad });
+
+    // seg = gather x rows by token_id, then zero the dummy positions
+    let idx_seg = store.push_idx(vec![]);
+    ops.push(Op::IdxBroadcast { base: token_id_pad, out: idx_seg, b: H });
+    let seg = store.push(vec![]);
+    ops.push(Op::Lookup { idx: idx_seg, out: seg, table: x });
+    let mut mask = vec![Goldilocks::ZERO; s_pad];
+    for i in 0..s {
+        mask[i] = Goldilocks::ONE;
     }
-    let mut out = acc.unwrap();
+    let mask_t = store.push(mask);
+    let seg_z = store.push(vec![]);
+    ops.push(Op::BroadcastScale { x: seg, scale: mask_t, out: seg_z, h: H });
+
+    // full per-expert weights (expert_of indexes the expert dim)
+    let eg_full = store.push_mmap(eg.clone(), 0, N_ROUTED * H * MOE_PAD);
+    let eu_full = store.push_mmap(eu.clone(), 0, N_ROUTED * H * MOE_PAD);
+    let ed_full = store.push_mmap(ed.clone(), 0, N_ROUTED * MOE_PAD * H);
+
+    // gate projection: g = seg_z @ eg[expert_of]
+    let idx_eg = store.push_idx(vec![]);
+    ops.push(Op::IdxBroadcast { base: expert_of_pad, out: idx_eg, b: H * MOE_PAD });
+    let eg_g = store.push(vec![]);
+    ops.push(Op::Lookup { idx: idx_eg, out: eg_g, table: eg_full });
+    let g = store.push(vec![]);
+    ops.push(Op::BatchedMatMul { a: seg_z, w: eg_g, c: g, s: s_pad, k: H, n: MOE_PAD });
+
+    // up projection: u = seg_z @ eu[expert_of]
+    let idx_eu = store.push_idx(vec![]);
+    ops.push(Op::IdxBroadcast { base: expert_of_pad, out: idx_eu, b: H * MOE_PAD });
+    let eu_g = store.push(vec![]);
+    ops.push(Op::Lookup { idx: idx_eu, out: eu_g, table: eu_full });
+    let u = store.push(vec![]);
+    ops.push(Op::BatchedMatMul { a: seg_z, w: eu_g, c: u, s: s_pad, k: H, n: MOE_PAD });
+
+    // silu(g) * u
+    let silu_idx = store.push_idx(vec![]);
+    ops.push(Op::GeluIndex { x: g, out: silu_idx, offset: 1 << 23, table_len: 1 << 24 });
+    let silu = store.push(vec![]);
+    ops.push(Op::Lookup { idx: silu_idx, out: silu, table: silu_t });
+    let act = store.push(vec![]);
+    ops.push(Op::ScaleVec { x: silu, scale: u, out: act, shift: 16 });
+
+    // down projection: d = act @ ed[expert_of]
+    let idx_ed = store.push_idx(vec![]);
+    ops.push(Op::IdxBroadcast { base: expert_of_pad, out: idx_ed, b: MOE_PAD * H });
+    let ed_g = store.push(vec![]);
+    ops.push(Op::Lookup { idx: idx_ed, out: ed_g, table: ed_full });
+    let d = store.push(vec![]);
+    ops.push(Op::BatchedMatMul { a: act, w: ed_g, c: d, s: s_pad, k: MOE_PAD, n: H });
+
+    // gather per-position gate values by (token_id, expert_of)
+    let idx_gate = store.push_idx(vec![]);
+    ops.push(Op::CombineIdx { a: token_id_pad, b: expert_of_pad, out: idx_gate, scale: N_ROUTED });
+    let gate_pos = store.push(vec![]);
+    ops.push(Op::Lookup { idx: idx_gate, out: gate_pos, table: gate });
+
+    // weighted gather back to token-major
+    let mut out = store.push(vec![]);
+    ops.push(Op::Gather { weighted: d, token_id: token_id_pad, gate: gate_pos, out, m, h: H });
     // shared experts (always active)
     let sg_w = store.push(shared_g);
     let su_w = store.push(shared_u);
