@@ -452,3 +452,97 @@ mod streaming_matmul_tests {
     }
 }
 
+
+/// Self-contained streaming gather-matmul proof: the eq-selector sumcheck plus the
+/// linear-combination terms that bind the weight claim to the per-expert weights.
+/// `table[e] = MLE_eval(W_all[e], (ch_d, v))` is opened from the committed `W_all`
+/// on the committed path; `counts[e] = sum_{pos->e} eq(pos, ch_pos)` is recomputed
+/// from the authenticated `expert_of`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct GatherMatMulProof {
+    pub claimed: Goldilocks,
+    pub sumcheck: VirtualProof,
+    pub counts: Vec<Goldilocks>,
+    pub table: Vec<Goldilocks>,
+}
+
+pub fn prove_gather_matmul(
+    seg: &[Goldilocks],
+    expert_of: &[u32],
+    w_all: &[Goldilocks],
+    g: &[Goldilocks],
+    s: usize,
+    k: usize,
+    n: usize,
+    n_experts: usize,
+    u: &[Goldilocks],
+    v: &[Goldilocks],
+    ch: &[Goldilocks],
+) -> GatherMatMulProof {
+    let matmul = prove_streaming(seg, expert_of, w_all, g, s, k, n, n_experts, u, v, ch);
+    let k_bits = k.trailing_zeros() as usize;
+    let ch_d = &ch[..k_bits];
+    let ch_pos = &ch[k_bits..];
+    let counts = expert_counts(expert_of, n_experts, ch_pos);
+    let table = expert_table_evals(w_all, n_experts, k, n, ch_d, v);
+    GatherMatMulProof {
+        claimed: matmul.claimed,
+        sumcheck: matmul.sumcheck,
+        counts,
+        table,
+    }
+}
+
+pub fn verify_gather_matmul(
+    proof: &GatherMatMulProof,
+    s: usize,
+    k: usize,
+    u: &[Goldilocks],
+    ch: &[Goldilocks],
+) -> bool {
+    let eq_u = mle::eq_evals(u);
+    let eq_b = broadcast_eq(&eq_u, k);
+    let eq_final = mle::eval(&eq_b, ch);
+    let final_evals = vec![
+        proof.sumcheck.final_evals[0],
+        proof.sumcheck.final_evals[1],
+        eq_final,
+    ];
+    if !verify_virtual(&proof.sumcheck, &terms(), proof.claimed, ch, &final_evals) {
+        return false;
+    }
+    proof.sumcheck.final_evals[1] == gather_open(&proof.counts, &proof.table)
+}
+
+#[cfg(test)]
+mod gather_matmul_proof_tests {
+    use super::*;
+    use crate::common::field::{ChallengeSource, XorShift64};
+
+    #[test]
+    fn gather_matmul_self_contained() {
+        let mut rng = XorShift64::new(0x7171);
+        let (s, k, n, n_experts) = (8usize, 4usize, 2usize, 4usize);
+        let w_all: Vec<Goldilocks> = (0..n_experts * k * n)
+            .map(|i| Goldilocks::from_u64((i as u64 % 7) + 1))
+            .collect();
+        let expert_of: Vec<u32> = (0..s).map(|i| (i % n_experts) as u32).collect();
+        let seg: Vec<Goldilocks> = (0..s * k)
+            .map(|i| Goldilocks::from_u64((i as u64 % 11) + 1))
+            .collect();
+        let g = gather_matmul_forward(&seg, &expert_of, &w_all, s, k, n, n_experts);
+
+        let u: Vec<Goldilocks> = (0..s.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let v: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let ch: Vec<Goldilocks> = (0..(s * k).trailing_zeros() as usize).map(|_| rng.field()).collect();
+
+        let proof = prove_gather_matmul(&seg, &expert_of, &w_all, &g, s, k, n, n_experts, &u, &v, &ch);
+        assert!(verify_gather_matmul(&proof, s, k, &u, &ch));
+
+        // tamper the weight claim (final_evals[1]) -> reject
+        let mut bad = proof;
+        bad.sumcheck.final_evals[1] = bad.sumcheck.final_evals[1] + Goldilocks::ONE;
+        assert!(!verify_gather_matmul(&bad, s, k, &u, &ch));
+    }
+}
+
