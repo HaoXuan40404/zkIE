@@ -325,3 +325,130 @@ mod streaming_tests {
     }
 }
 
+
+/// Streaming per-position matmul forward: `g[pos][j] = sum_d seg[pos][d] * W_all[expert_of[pos]][d][j]`,
+/// reading one `K x N` block of `W_all` at a time (no `S x K x N` materialization).
+pub fn gather_matmul_forward(
+    seg: &[Goldilocks],
+    expert_of: &[u32],
+    w_all: &[Goldilocks],
+    s: usize,
+    k: usize,
+    n: usize,
+    n_experts: usize,
+) -> Vec<Goldilocks> {
+    assert_eq!(seg.len(), s * k);
+    assert_eq!(expert_of.len(), s);
+    assert_eq!(w_all.len(), n_experts * k * n);
+    let mut g = vec![Goldilocks::ZERO; s * n];
+    for pos in 0..s {
+        let base = expert_of[pos] as usize * k * n;
+        for j in 0..n {
+            let mut acc = Goldilocks::ZERO;
+            for d in 0..k {
+                acc = acc + seg[pos * k + d] * w_all[base + d * n + j];
+            }
+            g[pos * n + j] = acc;
+        }
+    }
+    g
+}
+
+/// Streaming prove: same eq-selector sumcheck as `prove`, but `w_v` is computed on
+/// the fly from the per-expert weights instead of a materialized `S x K x N` gather.
+pub fn prove_streaming(
+    seg: &[Goldilocks],
+    expert_of: &[u32],
+    w_all: &[Goldilocks],
+    g: &[Goldilocks],
+    s: usize,
+    k: usize,
+    n: usize,
+    n_experts: usize,
+    u: &[Goldilocks],
+    v: &[Goldilocks],
+    ch: &[Goldilocks],
+) -> BatchedMatmulProof {
+    assert_eq!(seg.len(), s * k);
+    assert_eq!(expert_of.len(), s);
+    assert_eq!(w_all.len(), n_experts * k * n);
+    assert_eq!(g.len(), s * n);
+
+    let w_v = gather_w_v(expert_of, w_all, s, n_experts, k, n, v);
+    let eq_u = mle::eq_evals(u);
+    let eq_b = broadcast_eq(&eq_u, k);
+
+    let mut gp = v.to_vec();
+    gp.extend_from_slice(u);
+    let claimed = mle::eval(g, &gp);
+
+    let mles: [&[Goldilocks]; 3] = [seg, &w_v, &eq_b];
+    let sumcheck = prove_virtual(&mles, &terms(), claimed, ch);
+    BatchedMatmulProof { claimed, sumcheck }
+}
+
+/// Streaming verify: the ordinary eq-selector sumcheck, plus the weight claim bound
+/// by the linear combination `final_evals[1] == sum_e counts[e] * table[e]`.
+pub fn verify_streaming(
+    proof: &BatchedMatmulProof,
+    expert_of: &[u32],
+    w_all: &[Goldilocks],
+    s: usize,
+    k: usize,
+    n: usize,
+    n_experts: usize,
+    u: &[Goldilocks],
+    v: &[Goldilocks],
+    ch: &[Goldilocks],
+) -> bool {
+    assert_eq!(expert_of.len(), s);
+    assert_eq!(w_all.len(), n_experts * k * n);
+    if !verify(proof, s, k, u, ch) {
+        return false;
+    }
+    let k_bits = k.trailing_zeros() as usize;
+    let ch_d = &ch[..k_bits];
+    let ch_pos = &ch[k_bits..];
+    let counts = expert_counts(expert_of, n_experts, ch_pos);
+    let table = expert_table_evals(w_all, n_experts, k, n, ch_d, v);
+    proof.sumcheck.final_evals[1] == gather_open(&counts, &table)
+}
+
+#[cfg(test)]
+mod streaming_matmul_tests {
+    use super::*;
+    use crate::common::field::{ChallengeSource, XorShift64};
+
+    #[test]
+    fn streaming_matches_materialized() {
+        let mut rng = XorShift64::new(0x6161);
+        let (s, k, n, n_experts) = (8usize, 4usize, 2usize, 4usize);
+
+        let w_all: Vec<Goldilocks> = (0..n_experts * k * n)
+            .map(|i| Goldilocks::from_u64((i as u64 % 7) + 1))
+            .collect();
+        let expert_of: Vec<u32> = (0..s).map(|i| (i % n_experts) as u32).collect();
+        let seg: Vec<Goldilocks> = (0..s * k)
+            .map(|i| Goldilocks::from_u64((i as u64 % 11) + 1))
+            .collect();
+
+        // streaming forward == materialized forward
+        let g_stream = gather_matmul_forward(&seg, &expert_of, &w_all, s, k, n, n_experts);
+        let w_gathered = gather_weights(&expert_of, &w_all, s, n_experts, k, n);
+        let g_mat = forward(&seg, &w_gathered, s, k, n);
+        assert_eq!(g_stream, g_mat);
+
+        let u: Vec<Goldilocks> = (0..s.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let v: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let ch: Vec<Goldilocks> = (0..(s * k).trailing_zeros() as usize).map(|_| rng.field()).collect();
+
+        let proof = prove_streaming(&seg, &expert_of, &w_all, &g_stream, s, k, n, n_experts, &u, &v, &ch);
+        assert!(verify_streaming(&proof, &expert_of, &w_all, s, k, n, n_experts, &u, &v, &ch));
+
+        // tamper the weight claim -> reject
+        let mut bad = proof;
+        bad.sumcheck.final_evals[1] = bad.sumcheck.final_evals[1] + Goldilocks::ONE;
+        assert!(!verify_streaming(&bad, &expert_of, &w_all, s, k, n, n_experts, &u, &v, &ch));
+    }
+}
+
