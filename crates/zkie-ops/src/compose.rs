@@ -2100,7 +2100,6 @@ pub fn committed_cross_bind(
 /// Verify a [`committed_cross_bind`] proof: verify each WHIR opening against the
 /// commitment root, then verify the merged `same_poly`. No tensor data is read.
 pub fn verify_committed_cross_bind(
-    whir: &zkie_core::pcs::whir::Whir,
     committed: &BoundaryCommit,
     claims: &[(Vec<Goldilocks>, Goldilocks)],
     proof: &CommittedCrossBindProof,
@@ -2108,6 +2107,7 @@ pub fn verify_committed_cross_bind(
     if proof.openings.len() != claims.len() {
         return false;
     }
+    let whir = zkie_core::pcs::whir::Whir::with_params(committed.arity, 90, 17);
     let protocol = whir.opening_protocol(committed.arity, 1);
     for ((pt, expected), (open, opened)) in claims.iter().zip(proof.openings.iter()) {
         if whir
@@ -2274,7 +2274,7 @@ pub fn prove_committed_shard_dag(
     store: &mut Store,
     ops: &[Op],
     ops_per_shard: usize,
-    whir: &zkie_core::pcs::whir::Whir,
+    _whir: &zkie_core::pcs::whir::Whir,
     cached_weights: &[CachedWeightBatch],
     rng: &mut impl ChallengeSource,
 ) -> CommittedShardDagProof {
@@ -2284,7 +2284,9 @@ pub fn prove_committed_shard_dag(
     let mut boundary_commitments = Vec::with_capacity(boundary_tensors.len());
     let mut cross_binds = Vec::with_capacity(boundary_tensors.len());
     for &t in &boundary_tensors {
-        let committed = zkie_core::pcs::committed::commit(whir, store.get(t));
+        let arity = store.get(t).len().trailing_zeros() as usize;
+        let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, 17);
+        let committed = zkie_core::pcs::committed::commit(&bw, store.get(t));
         let mut claims = Vec::new();
         for shard in &plain.shards {
             for (tt, pt, ev) in &shard.claims {
@@ -2293,11 +2295,11 @@ pub fn prove_committed_shard_dag(
                 }
             }
         }
-        let sp = committed_cross_bind(whir, &committed, store.get(t), &claims, rng)
+        let sp = committed_cross_bind(&bw, &committed, store.get(t), &claims, rng)
             .expect("honest committed bind");
         boundary_commitments.push(BoundaryCommit {
             commitment: committed.commitment,
-            arity: store.get(t).len().trailing_zeros() as usize,
+            arity,
         });
         cross_binds.push(sp);
     }
@@ -2412,7 +2414,7 @@ pub fn verify_committed_shard_dag(
     tables: &[&[Goldilocks]],
     ops: &[Op],
     ops_per_shard: usize,
-    whir: &zkie_core::pcs::whir::Whir,
+    _whir: &zkie_core::pcs::whir::Whir,
     proof: &CommittedShardDagProof,
 ) -> bool {
     let ranges = shard_ranges(ops.len(), ops_per_shard);
@@ -2442,7 +2444,6 @@ pub fn verify_committed_shard_dag(
             }
         }
         if !verify_committed_cross_bind(
-            whir,
             &proof.boundary_commitments[i],
             &claims,
             &proof.cross_binds[i],
