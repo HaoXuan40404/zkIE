@@ -139,3 +139,23 @@ layernormcentered w+b, rmsnorm w) is now sound.
 Gemma 3 is blocked by PowBitsExceedBudget (required 26 > budget 17): its lm_head
 is vocab 2^18 x H_PAD 2^10 = 2^28, which is larger than the 2^26 that
 pow_bits=17 supports. Horizontal merge cannot help (it is one tensor).
+
+## Round 4 status (2026-10-22, per-group pow_bits)
+
+Fixed the pow_bits blocker: `commit_model_weights` now adapts `pow_bits` per
+weight group via `Whir::required_pow_bits(num_variables, 90)` (see
+[docs/model-adaptation.md](model-adaptation.md)), instead of a fixed 17. A
+tensor larger than 2^26 (e.g. Gemma 3's 2^28 lm_head) now gets its required
+budget automatically.
+
+All three models now pass the committed path end to end:
+
+| model | commit | prove | verify | argmax | proof |
+| --- | --- | --- | --- | --- | --- |
+| GPT-2 seq=512 | 16.52s | 68.24s | 10.98s | 511/512 | 1.74GB |
+| TimesFM seq=16 | 23.45s | 95.86s | 6.35s | - | 219MB |
+| Gemma 3 seq=16 | 17.81s | 89.47s | 5.54s | 16/16 | 82.9MB |
+
+Remaining for later: none blocking — the boundary num_variables issue (#2) and
+the pow_bits issue are both fixed. cache-reuse across runs is still a
+performance item, not correctness.
