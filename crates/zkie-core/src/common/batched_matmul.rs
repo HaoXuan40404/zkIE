@@ -212,3 +212,116 @@ mod tests {
     }
 }
 
+
+/// Stream the `partial_eval(W_gathered, v)` result from the per-expert weights,
+/// without materializing `W_gathered = S x K x N`. This is the memory-friendly
+/// replacement for `partial_eval(gather_weights(...), v)` used by the seq512 path.
+pub fn gather_w_v(
+    expert_of: &[u32],
+    w_all: &[Goldilocks],
+    s: usize,
+    n_experts: usize,
+    k: usize,
+    n: usize,
+    v: &[Goldilocks],
+) -> Vec<Goldilocks> {
+    assert_eq!(expert_of.len(), s);
+    assert_eq!(w_all.len(), n_experts * k * n);
+    let eq_v = mle::eq_evals(v); // n elements
+    let mut w_v = vec![Goldilocks::ZERO; s * k];
+    for pos in 0..s {
+        let base = expert_of[pos] as usize * k * n;
+        for d in 0..k {
+            let mut acc = Goldilocks::ZERO;
+            for j in 0..n {
+                acc = acc + w_all[base + d * n + j] * eq_v[j];
+            }
+            w_v[pos * k + d] = acc;
+        }
+    }
+    w_v
+}
+
+/// `counts[e] = sum_{pos: expert_of[pos]=e} eq(pos, ch_pos)`. Computed by the
+/// verifier from the (already authenticated) `expert_of`.
+pub fn expert_counts(expert_of: &[u32], n_experts: usize, ch_pos: &[Goldilocks]) -> Vec<Goldilocks> {
+    let eq_pos = mle::eq_evals(ch_pos); // s elements
+    let mut counts = vec![Goldilocks::ZERO; n_experts];
+    for (pos, &e) in expert_of.iter().enumerate() {
+        counts[e as usize] = counts[e as usize] + eq_pos[pos];
+    }
+    counts
+}
+
+/// `table[e] = MLE_eval(W_all[e], (ch_d, v))`, the MLE of the `K x N` block of
+/// expert `e` at the point `(ch_d, v)`. These are the n openings of the committed
+/// `W_all` (batchable).
+pub fn expert_table_evals(
+    w_all: &[Goldilocks],
+    n_experts: usize,
+    k: usize,
+    n: usize,
+    ch_d: &[Goldilocks],
+    v: &[Goldilocks],
+) -> Vec<Goldilocks> {
+    assert_eq!(w_all.len(), n_experts * k * n);
+    let mut point = v.to_vec();
+    point.extend_from_slice(ch_d); // [j = v (LSB), d = ch_d (MSB)]
+    let mut table = Vec::with_capacity(n_experts);
+    for e in 0..n_experts {
+        let block = &w_all[e * k * n..(e + 1) * k * n];
+        table.push(mle::eval(block, &point));
+    }
+    table
+}
+
+/// The linear-combination binding: `W~_gathered(ch_pos, ch_d, v) = sum_e counts[e] * table[e]`.
+pub fn gather_open(counts: &[Goldilocks], table: &[Goldilocks]) -> Goldilocks {
+    assert_eq!(counts.len(), table.len());
+    let mut acc = Goldilocks::ZERO;
+    for i in 0..counts.len() {
+        acc = acc + counts[i] * table[i];
+    }
+    acc
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use crate::common::field::{ChallengeSource, XorShift64};
+
+    #[test]
+    fn gather_opening_linear_combination() {
+        let mut rng = XorShift64::new(0x5151);
+        let (s, k, n, n_experts) = (8usize, 4usize, 2usize, 4usize);
+
+        let w_all: Vec<Goldilocks> = (0..n_experts * k * n)
+            .map(|i| Goldilocks::from_u64((i as u64 % 7) + 1))
+            .collect();
+        let expert_of: Vec<u32> = (0..s).map(|i| (i % n_experts) as u32).collect();
+
+        let v: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let ch_d: Vec<Goldilocks> = (0..k.trailing_zeros() as usize).map(|_| rng.field()).collect();
+        let ch_pos: Vec<Goldilocks> = (0..s.trailing_zeros() as usize).map(|_| rng.field()).collect();
+
+        // materialized reference
+        let w_gathered = gather_weights(&expert_of, &w_all, s, n_experts, k, n);
+        let w_v_ref = mle::partial_eval(&w_gathered, &v);
+
+        // streaming
+        let w_v = gather_w_v(&expert_of, &w_all, s, n_experts, k, n, &v);
+        assert_eq!(w_v, w_v_ref);
+
+        // weight claim == linear combination over experts
+        let mut ch = ch_d.clone();
+        ch.extend_from_slice(&ch_pos);
+        let weight_claim = mle::eval(&w_v, &ch);
+
+        let counts = expert_counts(&expert_of, n_experts, &ch_pos);
+        let table = expert_table_evals(&w_all, n_experts, k, n, &ch_d, &v);
+        let bound = gather_open(&counts, &table);
+
+        assert_eq!(weight_claim, bound);
+    }
+}
+
