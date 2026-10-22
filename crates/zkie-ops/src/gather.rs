@@ -121,3 +121,74 @@ mod tests {
         assert!(!verify_scatter_add(&proof, &weighted, &token_id, &bad, m, h));
     }
 }
+
+
+#[cfg(test)]
+mod moe_minimal {
+    use super::*;
+    use zkie_core::common::field::XorShift64;
+
+    #[test]
+    fn moe_minimal_closure() {
+        // synthetic MoE: n=4 experts, k=2 top-k, m=4 tokens, h=2 hidden dims
+        let mut rng = XorShift64::new(0x999);
+        let (m, n, h) = (4usize, 4usize, 2usize);
+        let mut sel = vec![Goldilocks::ZERO; m * n];
+        for t in 0..m {
+            sel[t * n + (t % n)] = Goldilocks::ONE;
+            sel[t * n + ((t + 1) % n)] = Goldilocks::ONE;
+        }
+        let gate: Vec<Goldilocks> = (0..m * n)
+            .map(|i| Goldilocks::from_u64((i as u64 % 3) + 1))
+            .collect();
+        let x: Vec<Goldilocks> = (0..m * h)
+            .map(|i| Goldilocks::from_u64((i as u64 % 7) + 1))
+            .collect();
+
+        let (token_id, expert_of) = crate::scatter::scatter_forward(&sel, m, n);
+        let mut seg = Vec::with_capacity(token_id.len() * h);
+        for &t in &token_id {
+            let base = t as usize * h;
+            for d in 0..h {
+                seg.push(x[base + d]);
+            }
+        }
+        let ffn_out: Vec<Goldilocks> = (0..token_id.len() * h)
+            .map(|i| {
+                let pos = i / h;
+                seg[i] * Goldilocks::from_u64(expert_of[pos] as u64 + 1)
+            })
+            .collect();
+        let weighted: Vec<Goldilocks> = (0..token_id.len() * h)
+            .map(|i| {
+                let pos = i / h;
+                ffn_out[i] * gate[token_id[pos] as usize * n + expert_of[pos] as usize]
+            })
+            .collect();
+        let out = gather_forward(&weighted, &token_id, m, h);
+
+        // dense reference
+        let mut reference = vec![Goldilocks::ZERO; m * h];
+        for t in 0..m {
+            for e in 0..n {
+                if sel[t * n + e] == Goldilocks::ONE {
+                    for d in 0..h {
+                        reference[t * h + d] = reference[t * h + d]
+                            + x[t * h + d] * Goldilocks::from_u64(e as u64 + 1) * gate[t * n + e];
+                    }
+                }
+            }
+        }
+        assert_eq!(out, reference);
+
+        let sp = crate::scatter::prove_scatter(&sel, &token_id, &expert_of, m, n, &mut rng);
+        assert!(crate::scatter::verify_scatter(&sp, m, n));
+        let gp = prove_scatter_add(&weighted, &token_id, &out, m, h, &mut rng);
+        assert!(verify_scatter_add(&gp, &weighted, &token_id, &out, m, h));
+
+        // tamper the gather output -> reject
+        let mut bad = out.clone();
+        bad[0] = bad[0] + Goldilocks::ONE;
+        assert!(!verify_scatter_add(&gp, &weighted, &token_id, &bad, m, h));
+    }
+}
