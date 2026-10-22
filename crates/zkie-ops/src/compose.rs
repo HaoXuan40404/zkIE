@@ -745,6 +745,11 @@ pub enum Op {
         k: usize,
         n: usize,
     },
+    IdxBroadcast {
+        base: T,
+        out: T,
+        b: usize,
+    },
 }
 
 /// A proof for one op, kept heterogeneous because the primitives have different
@@ -777,6 +782,7 @@ pub enum OpProof {
     Scatter(ScatterProof),
     Gather(ScatterAddProof),
     BatchedMatMul(BatchedMatmulProof, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>),
+    IdxBroadcast,
     ScaleGate,
 }
 
@@ -915,6 +921,7 @@ impl Op {
             Op::Scatter { sel, .. } => vec![sel],
             Op::Gather { weighted, token_id, .. } => vec![weighted, token_id],
             Op::BatchedMatMul { a, w, .. } => vec![a, w],
+            Op::IdxBroadcast { base, .. } => vec![base],
         }
     }
 
@@ -964,6 +971,7 @@ impl Op {
             } => vec![token_id, expert_of],
             Op::Gather { out, .. } => vec![out],
             Op::BatchedMatMul { c, .. } => vec![c],
+            Op::IdxBroadcast { out, .. } => vec![out],
         }
     }
 }
@@ -1149,6 +1157,16 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
             Op::BatchedMatMul { a, w, c, s, k, n } => {
                 let o = bmm::forward(store.get(a), store.get(w), s, k, n);
                 store.v[c] = TensorData::Owned(o);
+            }
+            Op::IdxBroadcast { base, out, b } => {
+                let src = store.idx[base].clone();
+                let mut o = Vec::with_capacity(src.len() * b);
+                for &v in &src {
+                    for j in 0..b {
+                        o.push(v * b as u32 + j as u32);
+                    }
+                }
+                store.idx[out] = o;
             }
             Op::ScaleGate {
                 x,
@@ -1535,6 +1553,9 @@ pub fn prove_shard_precomputed(
                 cp.extend_from_slice(&u);
                 claims.push((c, cp.clone(), mle::eval(store.get(c), &cp)));
                 op_proofs.push(OpProof::BatchedMatMul(p, u, v, ch));
+            }
+            Op::IdxBroadcast { .. } => {
+                op_proofs.push(OpProof::IdxBroadcast);
             }
             Op::ScaleGate { .. } => {
                 op_proofs.push(OpProof::ScaleGate);
@@ -1938,6 +1959,7 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                     return false;
                 }
             }
+            (Op::IdxBroadcast { .. }, OpProof::IdxBroadcast) => {}
             (Op::ScaleGate { .. }, OpProof::ScaleGate) => {}
             (Op::Relu { .. }, OpProof::Relu) => {}
             (
@@ -4545,7 +4567,8 @@ mod tests {
             | OpProof::Relu
             | OpProof::SoftmaxIndex
             | OpProof::GeluIndex
-            | OpProof::StableSoftmaxIndex => false,
+            | OpProof::StableSoftmaxIndex
+            | OpProof::IdxBroadcast => false,
             // Carry their own argument.
             OpProof::MatMul(..)
             | OpProof::Projection(..)
@@ -4579,10 +4602,11 @@ mod tests {
             OpProof::SoftmaxIndex,
             OpProof::GeluIndex,
             OpProof::StableSoftmaxIndex,
+            OpProof::IdxBroadcast,
         ];
         assert_eq!(
             unproven.len(),
-            8,
+            9,
             "the set of ops with no proof of their own changed; see the succinct-verification thread before adjusting"
         );
         for p in &unproven {
