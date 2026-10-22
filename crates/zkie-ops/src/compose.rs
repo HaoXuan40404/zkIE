@@ -17,7 +17,9 @@ use crate::layer_norm_centered::{
     verify_layer_norm_centered, LayerNormCenteredProof,
 };
 use crate::layernorm_chain::{prove_layernorm_chain, verify_layernorm_chain, LayernormChainProof};
+use crate::gather::{gather_forward, prove_scatter_add, verify_scatter_add, ScatterAddProof};
 use crate::projection::{prove_projection, verify_projection, ProjectionProof};
+use crate::scatter::{prove_scatter, scatter_forward, verify_scatter, ScatterProof};
 use crate::rms_norm::{prove_rms_norm, rms_norm_forward, verify_rms_norm, RmsNormProof};
 use crate::rope::{prove_rope, rope_forward, verify_rope, RoPEProof};
 use crate::softmax_scaled::{prove_softmax_rounded, verify_softmax_rounded, SoftmaxRoundedProof};
@@ -720,6 +722,20 @@ pub enum Op {
         h: usize,
         shift: u32,
     },
+    Scatter {
+        sel: T,
+        token_id: T,
+        expert_of: T,
+        m: usize,
+        n: usize,
+    },
+    Gather {
+        weighted: T,
+        token_id: T,
+        out: T,
+        m: usize,
+        h: usize,
+    },
 }
 
 /// A proof for one op, kept heterogeneous because the primitives have different
@@ -749,6 +765,8 @@ pub enum OpProof {
     RoPE(RoPEProof),
     TopKSelect(TopKSelectProof),
     Argmax(ArgmaxProof),
+    Scatter(ScatterProof),
+    Gather(ScatterAddProof),
     ScaleGate,
 }
 
@@ -884,6 +902,8 @@ impl Op {
             Op::TopKSelect { x, .. } => vec![x],
             Op::Argmax { x, .. } => vec![x],
             Op::ScaleGate { x, gate, .. } => vec![x, gate],
+            Op::Scatter { sel, .. } => vec![sel],
+            Op::Gather { weighted, token_id, .. } => vec![weighted, token_id],
         }
     }
 
@@ -926,6 +946,12 @@ impl Op {
                 d2,
                 ..
             } => vec![sel, thr, gate, d1, d2],
+            Op::Scatter {
+                token_id,
+                expert_of,
+                ..
+            } => vec![token_id, expert_of],
+            Op::Gather { out, .. } => vec![out],
         }
     }
 }
@@ -1085,6 +1111,27 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                         ))
                     })
                     .collect();
+                store.v[out] = TensorData::Owned(o);
+            }
+            Op::Scatter {
+                sel,
+                token_id,
+                expert_of,
+                m,
+                n,
+            } => {
+                let (tid, eof) = scatter_forward(store.get(sel), m, n);
+                store.idx[token_id] = tid;
+                store.idx[expert_of] = eof;
+            }
+            Op::Gather {
+                weighted,
+                token_id,
+                out,
+                m,
+                h,
+            } => {
+                let o = gather_forward(store.get(weighted), &store.idx[token_id], m, h);
                 store.v[out] = TensorData::Owned(o);
             }
             Op::ScaleGate {
@@ -1424,6 +1471,40 @@ pub fn prove_shard_precomputed(
             }
             Op::ScaleVec { .. } => {
                 op_proofs.push(OpProof::ScaleVec);
+            }
+            Op::Scatter {
+                sel,
+                token_id,
+                expert_of,
+                m,
+                n,
+            } => {
+                let p = prove_scatter(
+                    store.get(sel),
+                    &store.idx[token_id],
+                    &store.idx[expert_of],
+                    m,
+                    n,
+                    rng,
+                );
+                op_proofs.push(OpProof::Scatter(p));
+            }
+            Op::Gather {
+                weighted,
+                token_id,
+                out,
+                m,
+                h,
+            } => {
+                let p = prove_scatter_add(
+                    store.get(weighted),
+                    &store.idx[token_id],
+                    store.get(out),
+                    m,
+                    h,
+                    rng,
+                );
+                op_proofs.push(OpProof::Gather(p));
             }
             Op::ScaleGate { .. } => {
                 op_proofs.push(OpProof::ScaleGate);
@@ -1812,6 +1893,16 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
             }
             (Op::Scale { .. }, OpProof::Scale) => {}
             (Op::ScaleVec { .. }, OpProof::ScaleVec) => {}
+            (Op::Scatter { m, n, .. }, OpProof::Scatter(p)) => {
+                if !verify_scatter(p, *m, *n) {
+                    return false;
+                }
+            }
+            (Op::Gather { m, h, .. }, OpProof::Gather(p)) => {
+                if !verify_scatter_add(p, &p.weighted, &p.token_id, &p.out, *m, *h) {
+                    return false;
+                }
+            }
             (Op::ScaleGate { .. }, OpProof::ScaleGate) => {}
             (Op::Relu { .. }, OpProof::Relu) => {}
             (
@@ -4292,7 +4383,9 @@ mod tests {
             | OpProof::RmsNorm(..)
             | OpProof::RoPE(..)
             | OpProof::TopKSelect(..)
-            | OpProof::Argmax(..) => true,
+            | OpProof::Argmax(..)
+            | OpProof::Scatter(..)
+            | OpProof::Gather(..) => true,
         }
     }
 

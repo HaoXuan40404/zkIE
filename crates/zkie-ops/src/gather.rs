@@ -12,6 +12,9 @@ pub struct ScatterAddProof {
     pub frac: FractionalProof,
     pub alpha: Goldilocks,
     pub gamma: Vec<Goldilocks>,
+    pub weighted: Vec<Goldilocks>,
+    pub out: Vec<Goldilocks>,
+    pub token_id: Vec<u32>,
 }
 
 /// `out[t][d] = sum_{pos: token_id[pos] == t} weighted[pos][d]`.
@@ -59,7 +62,14 @@ pub fn prove_scatter_add(
         }
     }
     let frac = prove_fractional(num, den, rng);
-    ScatterAddProof { frac, alpha, gamma }
+    ScatterAddProof {
+        frac,
+        alpha,
+        gamma,
+        weighted: weighted.to_vec(),
+        out: out.to_vec(),
+        token_id: token_id.to_vec(),
+    }
 }
 
 pub fn verify_scatter_add(
