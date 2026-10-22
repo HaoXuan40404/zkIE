@@ -3660,6 +3660,117 @@ mod tests {
     }
 
 
+
+    #[test]
+    fn op_shard_expert_major_moe_roundtrip() {
+        use crate::scatter::scatter_forward;
+
+        let mut rng = XorShift64::new(0x3030);
+        let (m, n_experts, h, p) = (4usize, 4usize, 4usize, 2usize);
+        let k_top = 2usize;
+        let s = m * k_top; // 8, power of two
+
+        let mut sel = vec![Goldilocks::ZERO; m * n_experts];
+        for t in 0..m {
+            sel[t * n_experts + (t % n_experts)] = Goldilocks::ONE;
+            sel[t * n_experts + ((t + 1) % n_experts)] = Goldilocks::ONE;
+        }
+        let (token_id, expert_of) = scatter_forward(&sel, m, n_experts);
+        assert_eq!(token_id.len(), s);
+
+        let mut store = Store::new();
+        let x_t = store.push(
+            (0..m * h)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let w_all_t = store.push(
+            (0..n_experts * h * p)
+                .map(|_| from_i64((rng.next_u64() % 50) as i64))
+                .collect(),
+        );
+        let sel_t = store.push(sel.clone());
+        let token_id_t = store.push_idx(token_id.clone());
+        let expert_of_t = store.push_idx(expert_of.clone());
+
+        let mut idx_seg = Vec::with_capacity(s * h);
+        for pos in 0..s {
+            for d in 0..h {
+                idx_seg.push((token_id[pos] as usize * h + d) as u32);
+            }
+        }
+        let idx_seg_t = store.push_idx(idx_seg);
+        let seg_t = store.push(vec![]);
+
+        let mut idx_w = Vec::with_capacity(s * h * p);
+        for pos in 0..s {
+            for dj in 0..h * p {
+                idx_w.push((expert_of[pos] as usize * h * p + dj) as u32);
+            }
+        }
+        let idx_w_t = store.push_idx(idx_w);
+        let w_t = store.push(vec![]);
+
+        let g_t = store.push(vec![]);
+        let out_t = store.push(vec![]);
+
+        let ops = vec![
+            Op::Scatter {
+                sel: sel_t,
+                token_id: token_id_t,
+                expert_of: expert_of_t,
+                m,
+                n: n_experts,
+            },
+            Op::Lookup {
+                idx: idx_seg_t,
+                out: seg_t,
+                table: x_t,
+            },
+            Op::Lookup {
+                idx: idx_w_t,
+                out: w_t,
+                table: w_all_t,
+            },
+            Op::BatchedMatMul {
+                a: seg_t,
+                w: w_t,
+                c: g_t,
+                s,
+                k: h,
+                n: p,
+            },
+            Op::Gather {
+                weighted: g_t,
+                token_id: token_id_t,
+                out: out_t,
+                m,
+                h: p,
+            },
+        ];
+
+        let proof = prove_shard(&mut store, &ops, &[out_t], &mut rng);
+        assert!(verify_shard(&store.owned_slices(), &ops, &proof));
+
+        let mut reference = vec![Goldilocks::ZERO; m * p];
+        for t in 0..m {
+            for e in 0..n_experts {
+                if sel[t * n_experts + e] == Goldilocks::ONE {
+                    for j in 0..p {
+                        let mut acc = Goldilocks::ZERO;
+                        for d in 0..h {
+                            acc = acc
+                                + store.get(x_t)[t * h + d] * store.get(w_all_t)[e * h * p + d * p + j];
+                        }
+                        reference[t * p + j] = reference[t * p + j] + acc;
+                    }
+                }
+            }
+        }
+        assert_eq!(store.get(out_t), reference.as_slice());
+    }
+
+
     #[test]
     fn op_shard_transpose_matmul_roundtrip() {
         // scores = Q @ K^T  (the core of attention): transpose K, then matmul.
