@@ -159,3 +159,39 @@ All three models now pass the committed path end to end:
 Remaining for later: none blocking — the boundary num_variables issue (#2) and
 the pow_bits issue are both fixed. cache-reuse across runs is still a
 performance item, not correctness.
+
+## Final status (2026-10-22)
+
+Correctness is complete. Performance/scale items remain.
+
+### Done (correctness)
+
+1. 90-bit weight commitments (was new_testing 32-bit).
+2. mmap weights via materialize (was Store::get panic).
+3. OpeningProtocol/Whir serialized via reconstruction (were not serde).
+4. Commit split into one-time commit_model_weights + prove restore (was re-commit per prove).
+5. Projection bias + layernorm/layernormcentered w+b + rmsnorm w all opened (were committed but never opened).
+6. Boundary commitment per-arity Whir (was a single whir, broke on non-uniform sizes).
+7. Per-group adaptive pow_bits via Whir::required_pow_bits (was fixed 17, broke >2^26 tensors).
+8. Dead per-weight committed path removed.
+9. Batch-opening gamma/challenges Fiat-Shamir (were prover-chosen).
+10. Committed verify parallelized (was sequential; 66.9s -> 8.8s).
+
+Three models pass end to end: GPT-2 511/512, TimesFM, Gemma 3 16/16.
+cargo test -p zkie-ops --lib: 36 passed.
+
+### Remaining (performance / scale, not correctness)
+
+1. cache-reuse across runs: commit_model_weights always re-commits (no
+   cache-existence skip), so the ~17-23s commit is paid every run.
+2. proof size: GPT-2 1.74GB, dominated by the store-free witness (softmax
+   indices/e, etc.).
+3. prove time: GPT-2 ~68s, the longest of the three phases.
+4. DeepSeek not yet adapted (see docs/model-adaptation.md; MoE lazy-open + mmap).
+
+### Minor cleanups (non-blocking)
+
+- prove_committed_shard_dag / verify_committed_shard_dag take a now-unused
+  `_whir` placeholder (boundaries build their own per-tensor Whir).
+- Lookup tables (rsqrt/exp/gelu) are trusted public inputs, not committed
+  (allowed fallback in the store-free plan).
