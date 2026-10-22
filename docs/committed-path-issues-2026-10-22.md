@@ -107,3 +107,17 @@ normalization output point using the out VirtualProof's final_evals.
   tensors; needs per-size boundary grouping).
 - cache-reuse not implemented: commit_model_weights always re-commits, no
   cache-existence check, so commit-once + reuse across runs is incomplete.
+
+### Full weight commitment complete (2026-10-22)
+
+Opened the remaining normalization weights, so every committed weight is now
+opened and verified:
+- Op::Layernorm { w, b } -> claimed at r_out.
+- Op::LayerNormCentered { w, b } -> claimed at r_out.
+- Op::RmsNorm { w } -> claimed at r_out.
+
+GPT-2 seq=512 end to end: commit 16.59s / prove 67.15s / verify 10.52s /
+argmax 511/512 / proof 1.74GB. The projection bias and the normalization
+w/b were opened via `mle::eval` at their output point, matching the batch
+opening. Full weight commitment (matmul b, projection w+bias, layernorm w+b,
+layernormcentered w+b, rmsnorm w) is now sound.
