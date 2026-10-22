@@ -240,10 +240,11 @@ Done (committed):
 GPT-2 seq=512 end-to-end (committed path): commit 16.9s / prove 84.6s /
 verify 33.3s / argmax 511/512 / proof 2.55GB / rss 38GB.
 
+GPT-2 padding fixed: the padded vocab columns are masked to -(1<<26) after the
+right-shift (Scale shift 13), and the Argmax range-check is 27 bits. The proven
+index now matches the post-hoc argmax (n_mismatch=0).
+
 Remaining:
-- GPT-2 vocab padding (50257 -> 65536) has zero logits above the (negative)
-  real-vocab logits, so the argmax over the padded vocab can pick a padding
-  column. Fix = quantize to ~12-bit + mask the padding (as DeepProve does).
 - Real prompt + autoregressive generation (extract_gpt2.py exports the new
   tokens/pos_emb but generation needs onnx + a tokenizer on a machine that has
   them).
