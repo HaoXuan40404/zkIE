@@ -404,6 +404,24 @@ pub fn build_gpt2(
         factor: 1,
         shift: 13,
     });
+    // Mask the padded vocab columns (50257..65536) to a large negative so the
+    // argmax never lands on padding; the value stays within the range-check.
+    let mask: Vec<Goldilocks> = (0..65536)
+        .map(|j| {
+            if j < 50257 {
+                from_i32(0)
+            } else {
+                from_i32(-(1 << 26))
+            }
+        })
+        .collect();
+    let mask_t = store.push(broadcast(&mask, m));
+    let logits_masked = store.push(vec![]);
+    ops.push(Op::Add {
+        a: logits_scaled,
+        b: mask_t,
+        c: logits_masked,
+    });
 
     // n-position argmax over the scaled logits rows -> public index tensor t.
     let arg_sel = store.push(vec![]);
@@ -413,7 +431,7 @@ pub fn build_gpt2(
     let arg_d2 = store.push(vec![]);
     let t = store.push_idx(vec![]);
     ops.push(Op::Argmax {
-        x: logits_scaled,
+        x: logits_masked,
         sel: arg_sel,
         thr: arg_thr,
         gate: arg_gate,

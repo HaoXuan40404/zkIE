@@ -104,7 +104,19 @@ fn main() {
             argmax_ok = false;
         }
     }
-    println!("argmax_op_matches={argmax_ok}");
+    let mut n_mismatch = 0;
+    for i in 0..m {
+        let mut best = 0usize;
+        let mut best_v = round_div(to_i64(lg[i * 65536]), 8192);
+        for j in 1..50257 {
+            let v = round_div(to_i64(lg[i * 65536 + j]), 8192);
+            if v > best_v { best_v = v; best = j; }
+        }
+        if arg_idx[i] as usize != best {
+            n_mismatch += 1;
+        }
+    }
+    println!("argmax_op_matches={argmax_ok} n_mismatch={n_mismatch}");
     // Sequence self-consistency is a verifier-side check on the public tokens/argmax
     // (only meaningful for a real generated sequence; random tokens will not hold).
     println!(
