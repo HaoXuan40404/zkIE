@@ -1674,6 +1674,7 @@ pub fn prove_shard_precomputed(
                     m,
                     n,
                     k,
+                    16,
                     rng,
                 );
                 claims.push((x, p.r.clone(), mle::eval(store.get(x), &p.r)));
@@ -1702,6 +1703,7 @@ pub fn prove_shard_precomputed(
                     &store.idx[out],
                     m,
                     n,
+                    26,
                     rng,
                 );
                 claims.push((x, p.topk.r.clone(), mle::eval(store.get(x), &p.topk.r)));

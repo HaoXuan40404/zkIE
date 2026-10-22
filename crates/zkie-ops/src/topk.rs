@@ -34,6 +34,7 @@ pub struct TopKSelectProof {
     pub b_d1: Goldilocks,
     pub a_d2: Goldilocks,
     pub b_d2: Goldilocks,
+    pub range_bits: usize,
     pub sel: Vec<Goldilocks>,
     pub d1: Vec<Goldilocks>,
     pub d2: Vec<Goldilocks>,
@@ -73,8 +74,8 @@ pub fn topk_forward(
             let se = sel[t * n + e];
             let th = thr[t];
             gate[t * n + e] = xe * se;
-            d1[t * n + e] = se * (xe - th);
-            d2[t * n + e] = (Goldilocks::ONE - se) * (th - xe);
+            d1[t * n + e] = se * from_i64(to_i64(xe) - to_i64(th));
+            d2[t * n + e] = (Goldilocks::ONE - se) * from_i64(to_i64(th) - to_i64(xe));
         }
     }
     (thr, sel, gate, d1, d2)
@@ -91,6 +92,7 @@ pub fn prove_topk(
     m: usize,
     n: usize,
     k: usize,
+    range_bits: usize,
     rng: &mut impl ChallengeSource,
 ) -> TopKSelectProof {
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
@@ -149,7 +151,7 @@ pub fn prove_topk(
     let a_d1 = rng.field();
     let b_d1 = rng.field();
     let d1_idx: Vec<u32> = d1.iter().map(|&v| to_i32(v) as u32).collect();
-    let d1_table: Vec<Goldilocks> = (0..(1usize << 16))
+    let d1_table: Vec<Goldilocks> = (0..(1usize << range_bits))
         .map(|j| Goldilocks::from_u64(j as u64))
         .collect();
     let d1_range = prove_lookup_fractional(&d1_idx, d1, &d1_table, a_d1, b_d1, rng);
@@ -175,6 +177,7 @@ pub fn prove_topk(
         b_d1,
         a_d2,
         b_d2,
+        range_bits,
             sel: sel.to_vec(),
         d1: d1.to_vec(),
         d2: d2.to_vec(),
@@ -249,7 +252,7 @@ pub fn verify_topk(proof: &TopKSelectProof, k: usize) -> bool {
     }
 
     let d1_idx: Vec<u32> = proof.d1.iter().map(|&v| to_i32(v) as u32).collect();
-    let d1_table: Vec<Goldilocks> = (0..(1usize << 16))
+    let d1_table: Vec<Goldilocks> = (0..(1usize << proof.range_bits))
         .map(|j| Goldilocks::from_u64(j as u64))
         .collect();
     if !verify_lookup_fractional(
@@ -264,7 +267,7 @@ pub fn verify_topk(proof: &TopKSelectProof, k: usize) -> bool {
     }
 
     let d2_idx: Vec<u32> = proof.d2.iter().map(|&v| to_i32(v) as u32).collect();
-    let d2_table: Vec<Goldilocks> = (0..(1usize << 16))
+    let d2_table: Vec<Goldilocks> = (0..(1usize << proof.range_bits))
         .map(|j| Goldilocks::from_u64(j as u64))
         .collect();
     verify_lookup_fractional(
@@ -287,7 +290,7 @@ mod tests {
         let (m, n, k) = (4usize, 8usize, 3usize);
         let x: Vec<Goldilocks> = (0..m * n).map(|i| from_i64((i as i64 % 53) - 26)).collect();
         let (thr, sel, gate, d1, d2) = topk_forward(&x, m, n, k);
-        let mut proof = prove_topk(&x, &sel, &thr, &gate, &d1, &d2, m, n, k, &mut rng);
+        let mut proof = prove_topk(&x, &sel, &thr, &gate, &d1, &d2, m, n, k, 16, &mut rng);
         assert!(verify_topk(&proof, k));
         // corrupt sel -> range lookup must fail
         proof.sel[0] = proof.sel[0] + Goldilocks::ONE;
@@ -346,9 +349,10 @@ pub fn prove_argmax(
     out: &[u32],
     m: usize,
     n: usize,
+    range_bits: usize,
     rng: &mut impl ChallengeSource,
 ) -> ArgmaxProof {
-    let topk = prove_topk(x, sel, thr, gate, d1, d2, m, n, 1, rng);
+    let topk = prove_topk(x, sel, thr, gate, d1, d2, m, n, 1, range_bits, rng);
     ArgmaxProof {
         topk,
         out: out.to_vec(),
@@ -389,7 +393,7 @@ mod argmax_tests {
             assert_eq!(out[i] as usize, best);
             assert_eq!(sel[i * n + best], Goldilocks::ONE);
         }
-        let proof = prove_argmax(&x, &sel, &thr, &gate, &d1, &d2, &out, m, n, &mut rng);
+        let proof = prove_argmax(&x, &sel, &thr, &gate, &d1, &d2, &out, m, n, 16, &mut rng);
         assert!(verify_argmax(&proof, m, n));
         // corrupt out -> index binding must fail
         let mut bad = proof;

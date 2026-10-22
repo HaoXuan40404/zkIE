@@ -20,6 +20,12 @@ fn load_i32(path: &str) -> Vec<Goldilocks> {
         .collect()
 }
 
+fn round_div(a: i64, b: i64) -> i64 {
+    let q = a.div_euclid(b);
+    let r = a.rem_euclid(b);
+    if r * 2 >= b { q + 1 } else { q }
+}
+
 fn peak_rss_kb() -> u64 {
     let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     for line in s.lines() {
@@ -37,7 +43,7 @@ fn main() {
 
     let mut store = Store::new();
     let mut ops = Vec::new();
-    let (_x0, logits) = build_gpt2(&mut store, &mut ops, dir, m, shift);
+    let (_x0, logits, _tokens, t) = build_gpt2(&mut store, &mut ops, dir, m, shift);
     let gt = load_i32(&format!("{dir}/gt_argmax_512_i32.bin"));
 
     // Boundary tensors are m x D = 512 x 1024 = 2^19.
@@ -78,6 +84,26 @@ fn main() {
         }
     }
 
+    // Argmax-op sanity: the proven index vector must match the post-hoc argmax.
+    // Argmax-op sanity: the proven index t must equal the argmax of the *scaled*
+    // logits (the actual input to the Argmax op, right-shifted by 8).
+    let arg_idx = &store.idx[t];
+    let mut argmax_ok = true;
+    for i in 0..m {
+        let mut best = 0usize;
+        let mut best_v = round_div(to_i64(lg[i * 65536]), 8192);
+        for j in 1..50257 {
+            let v = round_div(to_i64(lg[i * 65536 + j]), 8192);
+            if v > best_v {
+                best_v = v;
+                best = j;
+            }
+        }
+        if arg_idx[i] as usize != best {
+            argmax_ok = false;
+        }
+    }
+    println!("argmax_op_matches={argmax_ok}");
     println!(
         "commit={commit_t:?} prove={prove_t:?} verify={verify_t:?} argmax={matches}/{m} rss={}kB proof_bytes={}",
         peak_rss_kb(),

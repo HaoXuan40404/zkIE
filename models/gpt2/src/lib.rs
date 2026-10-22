@@ -8,7 +8,7 @@ use std::fs;
 use std::sync::Arc;
 
 use zkie_core::common::field::{Goldilocks, XorShift64};
-use zkie_core::common::fixed_point::from_i32;
+use zkie_core::common::fixed_point::{from_i32, to_i32};
 use zkie_core::common::weights_io::WeightMmap;
 use zkie_ops::compose::{causal_mask, Op, Store};
 
@@ -324,16 +324,42 @@ pub fn build_gpt2(
     dir: &str,
     m: usize,
     shift: u32,
-) -> (usize, usize) {
+) -> (usize, usize, usize, usize) {
     let exp_table = load_i32("models/gpt2/weights/exp_table_i32.bin");
     let rsqrt_table = load_i32("models/gpt2/weights/rsqrt_table_i32.bin");
     let gelu_table = load_i32(&format!("{dir}/gelu_table_i32.bin"));
-    let embedding = load_i32(&format!("{dir}/embedding_i32.bin"));
     let lnf_w = load_i32(&format!("{dir}/ln_f_w_i32.bin"));
     let lnf_b = load_i32(&format!("{dir}/ln_f_b_i32.bin"));
     let lm_head_w = Arc::new(WeightMmap::open(&format!("{dir}/lm_head_w_i32.bin")).unwrap());
 
-    let x0 = store.push(embedding[..m * D].to_vec());
+    // Token ids are a public input; the input embedding is wte[tokens] + pos_emb.
+    // wte is tied with the (transposed) lm_head weight, so we reuse lm_head
+    // directly via a transposed gather index (emb_idx[i*D + d] = d*VOCAB + token).
+    // pos_emb is the input-independent residual (precomputed) and is added after.
+    let tokens_raw = load_i32(&format!("{dir}/tokens_i32.bin"));
+    let tokens = store.push_idx(tokens_raw.iter().map(|&v| to_i32(v) as u32).collect());
+    let emb_idx: Vec<u32> = (0..m)
+        .flat_map(|i| {
+            let ti = to_i32(tokens_raw[i]) as u32;
+            (0..D).map(move |d| (d * 65536) as u32 + ti)
+        })
+        .collect();
+    let emb_idx_t = store.push_idx(emb_idx);
+    let wte_owned = store.push(load_i32(&format!("{dir}/lm_head_w_i32.bin")));
+    let token_emb = store.push(vec![]);
+    ops.push(Op::Lookup {
+        idx: emb_idx_t,
+        out: token_emb,
+        table: wte_owned,
+    });
+    let pos_emb = load_i32(&format!("{dir}/pos_emb_i32.bin"));
+    let pos_emb_t = store.push(pos_emb[..m * D].to_vec());
+    let x0 = store.push(vec![]);
+    ops.push(Op::Add {
+        a: token_emb,
+        b: pos_emb_t,
+        c: x0,
+    });
     let exp_t = store.push(exp_table);
     let rsqrt_t = store.push(rsqrt_table);
     let gelu_t = store.push(gelu_table);
@@ -369,5 +395,33 @@ pub fn build_gpt2(
         k: D,
         n: 65536,
     });
-    (x0, logits)
+    // Right-shift the logits by 13 bits before argmax so the range check
+    // (thr - x) stays bounded; argmax is invariant under this (monotone) shift.
+    let logits_scaled = store.push(vec![]);
+    ops.push(Op::Scale {
+        x: logits,
+        out: logits_scaled,
+        factor: 1,
+        shift: 13,
+    });
+
+    // n-position argmax over the scaled logits rows -> public index tensor t.
+    let arg_sel = store.push(vec![]);
+    let arg_thr = store.push(vec![]);
+    let arg_gate = store.push(vec![]);
+    let arg_d1 = store.push(vec![]);
+    let arg_d2 = store.push(vec![]);
+    let t = store.push_idx(vec![]);
+    ops.push(Op::Argmax {
+        x: logits_scaled,
+        sel: arg_sel,
+        thr: arg_thr,
+        gate: arg_gate,
+        d1: arg_d1,
+        d2: arg_d2,
+        out: t,
+        m,
+        n: 65536,
+    });
+    (x0, logits, tokens, t)
 }
