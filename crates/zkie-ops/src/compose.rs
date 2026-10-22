@@ -1533,6 +1533,8 @@ pub fn prove_shard_precomputed(
                     rng,
                 );
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
+                claims.push((w, p.r_out.clone(), mle::eval(store.get(w), &p.r_out)));
+                claims.push((b, p.r_out.clone(), mle::eval(store.get(b), &p.r_out)));
                 op_proofs.push(OpProof::Layernorm(p));
             }
             Op::LayerNormCentered {
@@ -1561,6 +1563,8 @@ pub fn prove_shard_precomputed(
                     mle::eval(store.get(x), &p.centered_r),
                 ));
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
+                claims.push((w, p.r_out.clone(), mle::eval(store.get(w), &p.r_out)));
+                claims.push((b, p.r_out.clone(), mle::eval(store.get(b), &p.r_out)));
                 op_proofs.push(OpProof::LayerNormCentered(p));
             }
             Op::RmsNorm {
@@ -1583,6 +1587,7 @@ pub fn prove_shard_precomputed(
                     rng,
                 );
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
+                claims.push((w, p.r_out.clone(), mle::eval(store.get(w), &p.r_out)));
                 op_proofs.push(OpProof::RmsNorm(p));
             }
             Op::RoPE {
