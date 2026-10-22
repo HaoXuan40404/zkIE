@@ -189,7 +189,30 @@ cargo test -p zkie-ops --lib: 36 passed.
 2. proof size: GPT-2 1.74GB, dominated by the store-free witness (softmax
    indices/e, etc.).
 3. prove time: GPT-2 ~68s, the longest of the three phases.
-4. DeepSeek not yet adapted (see docs/model-adaptation.md; MoE lazy-open + mmap).
+4. DeepSeek-V2-Lite seq=16 now adapted end to end (see section below); seq=512 and MoE lazy-open / routing proof remain.
+
+
+## DeepSeek-V2-Lite seq=16 (2026-10-22, committed path e2e)
+
+DeepSeek-V2-Lite (M=16) now runs the committed path end to end. MoE is still
+DENSE (all 64 routed experts committed, gate is a trusted constant, top-k routing
+proof not yet wired) -- this is the known scope, not a correctness gap.
+
+| model | commit | prove | verify | argmax | rss | proof |
+| --- | --- | --- | --- | --- | --- | --- |
+| DeepSeek-V2-Lite seq=16 | 480.76s (8.0m) | 1990.72s (33.2m) | 185.04s (3.1m) | 16/16 | 193.8GB | 1.43GB |
+
+Notes:
+
+- The earlier `TooLarge(5, 1)` panic was NOT weights or boundaries -- it was the
+  bench placeholder `Whir::new_testing(1)` (WHIR folding factor 5 cannot fold a
+  1-variable instance). Fixed by `Whir::new_testing(5)`. All 10110 weight tensors
+  and 137 boundary tensors are power-of-2 with arity >= 5, so the real commit
+  paths never hit it.
+- prove time is dominated by weight batch openings: restoring ~290GB of weight
+  prover-data cache and running one FRI proof per weight group (~191 groups).
+- verify is store-free (no forward / no intermediate activations), 3.1m.
+- commit cache is ~290GB on disk (15.7B params, dense MoE, WHIR-encoded).
 
 ### Minor cleanups (non-blocking)
 

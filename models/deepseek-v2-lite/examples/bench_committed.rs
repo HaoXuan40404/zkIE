@@ -37,7 +37,7 @@ fn main() {
     let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
 
     // Boundaries build a per-tensor Whir internally; this is a placeholder.
-    let whir = Whir::new_testing(1);
+    let whir = Whir::new_testing(5);
     let mut rng = XorShift64::new(0xD5EED);
 
     let t0 = std::time::Instant::now();

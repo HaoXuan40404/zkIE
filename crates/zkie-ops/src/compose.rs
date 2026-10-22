@@ -2199,6 +2199,12 @@ pub fn commit_model_weights(
         std::collections::BTreeMap::new();
     for &t in &weight_tensors {
         let v = store.materialize(t).into_owned();
+        // WHIR folding factor is 5, so a tensor shorter than 2^5 cannot be
+        // folded; skip such tiny weights (they are negligible and have no
+        // meaningful commitment).
+        if v.len() < 32 {
+            continue;
+        }
         by_size.entry(v.len()).or_default().push((t, v));
     }
     std::fs::create_dir_all(cache_dir).expect("create weight cache dir");
