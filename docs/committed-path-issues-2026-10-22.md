@@ -254,3 +254,17 @@ test box):
   with onnx+onnxruntime+transformers to emit tokens_i32.bin (and gt) for each
   model, then run each model's committed bench end to end and confirm the
   sequence_shift_ok becomes true for a real prompt+response.
+
+
+## Sequence certification complete (GPT-2, range-decomposition) (2026-10-23)
+
+Replaced the single d2 range lookup (which forced a 13-bit logit shift that
+flipped a near-tie) with a 48-bit range decomposition: three 16-bit limbs,
+each range-checked against a 2^16 table, plus one recombination sumcheck. The
+argmax now runs on the exact (masked) logits, so the proven index equals the
+true argmax and the one-pass shift check passes.
+
+GPT-2 seq16 real sequence ("The sky is ..."): argmax 16/16,
+argmax_op_matches=true (n_mismatch=0), sequence_shift_ok=true, commit 10.5s /
+prove 48.5s / verify 21.5s / proof 101MB. Prove/verify are also faster than the
+shifted 2^27 single-table version.
