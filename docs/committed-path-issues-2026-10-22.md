@@ -80,3 +80,30 @@ instead of the real 50257); the committed path itself was correct.
   only Merkle paths).
 - verify (68.1s) is larger than prove (51.9s) now; worth profiling what verify
   spends on (weight opening verification vs boundary cross-bind vs sumcheck).
+
+## Round 2 status (2026-10-22, later)
+
+- Done: parallelize committed verify shard loop (par_iter), verify 66.9s -> 8.84s.
+- Done: remove dead per-weight committed path (commit_weights_batch,
+  open_weight_batch, verify_weight_batch, prove_projection_committed,
+  verify_projection_committed, CommittedProjectionProof) and their tests.
+- Done: open the projection bias (add a bias claim at the affine point), so the
+  projection bias commitment is now verified.
+
+### Remaining soundness gap (part of the original #1)
+
+collect_weight_tensors still commits normalization weights that are never
+opened:
+- Op::Layernorm { w, b } — neither w nor b is claimed.
+- Op::LayerNormCentered { w, b } — neither is claimed.
+- Op::RmsNorm { w } — w is not claimed.
+
+These need the same treatment as the projection bias: claim their w/b at the
+normalization output point using the out VirtualProof's final_evals.
+
+### Recorded for later (user researching)
+
+- Boundary Whir num_variables must match exactly (single whir for all boundary
+  tensors; needs per-size boundary grouping).
+- cache-reuse not implemented: commit_model_weights always re-commits, no
+  cache-existence check, so commit-once + reuse across runs is incomplete.
