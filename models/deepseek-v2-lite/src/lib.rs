@@ -465,20 +465,12 @@ fn build_moe(
     let ed_full = store.push_mmap(ed.clone(), 0, N_ROUTED * MOE_PAD * H);
 
     // gate projection: g = seg_z @ eg[expert_of]
-    let idx_eg = store.push_idx(vec![]);
-    ops.push(Op::IdxBroadcast { base: expert_of_pad, out: idx_eg, b: H * MOE_PAD });
-    let eg_g = store.push(vec![]);
-    ops.push(Op::Lookup { idx: idx_eg, out: eg_g, table: eg_full });
     let g = store.push(vec![]);
-    ops.push(Op::BatchedMatMul { a: seg_z, w: eg_g, c: g, s: s_pad, k: H, n: MOE_PAD });
+    ops.push(Op::GatherMatMul { a: seg_z, expert_of: expert_of_pad, w: eg_full, c: g, s: s_pad, k: H, n: MOE_PAD, n_experts: N_ROUTED });
 
     // up projection: u = seg_z @ eu[expert_of]
-    let idx_eu = store.push_idx(vec![]);
-    ops.push(Op::IdxBroadcast { base: expert_of_pad, out: idx_eu, b: H * MOE_PAD });
-    let eu_g = store.push(vec![]);
-    ops.push(Op::Lookup { idx: idx_eu, out: eu_g, table: eu_full });
     let u = store.push(vec![]);
-    ops.push(Op::BatchedMatMul { a: seg_z, w: eu_g, c: u, s: s_pad, k: H, n: MOE_PAD });
+    ops.push(Op::GatherMatMul { a: seg_z, expert_of: expert_of_pad, w: eu_full, c: u, s: s_pad, k: H, n: MOE_PAD, n_experts: N_ROUTED });
 
     // silu(g) * u
     let silu_idx = store.push_idx(vec![]);
@@ -489,12 +481,8 @@ fn build_moe(
     ops.push(Op::ScaleVec { x: silu, scale: u, out: act, shift: 16 });
 
     // down projection: d = act @ ed[expert_of]
-    let idx_ed = store.push_idx(vec![]);
-    ops.push(Op::IdxBroadcast { base: expert_of_pad, out: idx_ed, b: MOE_PAD * H });
-    let ed_g = store.push(vec![]);
-    ops.push(Op::Lookup { idx: idx_ed, out: ed_g, table: ed_full });
     let d = store.push(vec![]);
-    ops.push(Op::BatchedMatMul { a: act, w: ed_g, c: d, s: s_pad, k: MOE_PAD, n: H });
+    ops.push(Op::GatherMatMul { a: act, expert_of: expert_of_pad, w: ed_full, c: d, s: s_pad, k: MOE_PAD, n: H, n_experts: N_ROUTED });
 
     // gather per-position gate values by (token_id, expert_of)
     let idx_gate = store.push_idx(vec![]);

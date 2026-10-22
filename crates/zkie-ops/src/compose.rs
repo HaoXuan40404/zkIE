@@ -746,6 +746,16 @@ pub enum Op {
         k: usize,
         n: usize,
     },
+    GatherMatMul {
+        a: T,
+        expert_of: T,
+        w: T,
+        c: T,
+        s: usize,
+        k: usize,
+        n: usize,
+        n_experts: usize,
+    },
     IdxBroadcast {
         base: T,
         out: T,
@@ -800,6 +810,7 @@ pub enum OpProof {
     Scatter(ScatterProof),
     Gather(ScatterAddProof),
     BatchedMatMul(BatchedMatmulProof, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>),
+    GatherMatMul(bmm::GatherMatMulProof, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>),
     IdxBroadcast,
     CombineIdx,
     PadIdx,
@@ -942,6 +953,7 @@ impl Op {
             Op::Scatter { sel, .. } => vec![sel],
             Op::Gather { weighted, token_id, gate, .. } => vec![weighted, token_id, gate],
             Op::BatchedMatMul { a, w, .. } => vec![a, w],
+            Op::GatherMatMul { a, expert_of, w, .. } => vec![a, expert_of, w],
             Op::IdxBroadcast { base, .. } => vec![base],
             Op::CombineIdx { a, b, .. } => vec![a, b],
             Op::PadIdx { base, .. } => vec![base],
@@ -995,6 +1007,7 @@ impl Op {
             } => vec![token_id, expert_of],
             Op::Gather { out, .. } => vec![out],
             Op::BatchedMatMul { c, .. } => vec![c],
+            Op::GatherMatMul { c, .. } => vec![c],
             Op::IdxBroadcast { out, .. } => vec![out],
             Op::CombineIdx { out, .. } => vec![out],
             Op::PadIdx { out, .. } => vec![out],
@@ -1190,6 +1203,19 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
             }
             Op::BatchedMatMul { a, w, c, s, k, n } => {
                 let o = bmm::forward(store.get(a), store.get(w), s, k, n);
+                store.v[c] = TensorData::Owned(o);
+            }
+            Op::GatherMatMul { a, expert_of, w, c, s, k, n, n_experts } => {
+                let wv = store.materialize(w);
+                let o = bmm::gather_matmul_forward(
+                    store.get(a),
+                    &store.idx[expert_of],
+                    wv.as_ref(),
+                    s,
+                    k,
+                    n,
+                    n_experts,
+                );
                 store.v[c] = TensorData::Owned(o);
             }
             Op::IdxBroadcast { base, out, b } => {
@@ -1616,6 +1642,30 @@ pub fn prove_shard_precomputed(
                 claims.push((c, cp.clone(), mle::eval(store.get(c), &cp)));
                 op_proofs.push(OpProof::BatchedMatMul(p, u, v, ch));
             }
+            Op::GatherMatMul { a, expert_of, w, c, s, k, n, n_experts } => {
+                let u: Vec<Goldilocks> = (0..s.trailing_zeros() as usize).map(|_| rng.field()).collect();
+                let v: Vec<Goldilocks> = (0..n.trailing_zeros() as usize).map(|_| rng.field()).collect();
+                let ch: Vec<Goldilocks> = (0..(s * k).trailing_zeros() as usize).map(|_| rng.field()).collect();
+                let wv = store.materialize(w);
+                let p = bmm::prove_gather_matmul(
+                    store.get(a),
+                    &store.idx[expert_of],
+                    wv.as_ref(),
+                    store.get(c),
+                    s,
+                    k,
+                    n,
+                    n_experts,
+                    &u,
+                    &v,
+                    &ch,
+                );
+                claims.push((a, ch.clone(), mle::eval(store.get(a), &ch)));
+                let mut cp = v.clone();
+                cp.extend_from_slice(&u);
+                claims.push((c, cp.clone(), mle::eval(store.get(c), &cp)));
+                op_proofs.push(OpProof::GatherMatMul(p, u, v, ch));
+            }
             Op::IdxBroadcast { .. } => {
                 op_proofs.push(OpProof::IdxBroadcast);
             }
@@ -2027,6 +2077,11 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
             }
             (Op::BatchedMatMul { s, k, .. }, OpProof::BatchedMatMul(p, u, _, ch)) => {
                 if !bmm::verify(p, *s, *k, u, ch) {
+                    return false;
+                }
+            }
+            (Op::GatherMatMul { s, k, .. }, OpProof::GatherMatMul(p, u, _, ch)) => {
+                if !bmm::verify_gather_matmul(p, *s, *k, u, ch) {
                     return false;
                 }
             }
@@ -4915,7 +4970,8 @@ mod tests {
             | OpProof::Argmax(..)
             | OpProof::Scatter(..)
             | OpProof::Gather(..)
-            | OpProof::BatchedMatMul(..) => true,
+            | OpProof::BatchedMatMul(..)
+            | OpProof::GatherMatMul(..) => true,
         }
     }
 
