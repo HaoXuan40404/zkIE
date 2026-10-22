@@ -5,7 +5,8 @@ use zkie_core::common::fixed_point::{from_i32, to_i32, to_i64};
 use zkie_core::pcs::whir::Whir;
 use zkie_models_deepseek_v2_lite::{build_deepseek, VOCAB, VOCAB_PAD};
 use zkie_ops::compose::{
-    commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes, Store,
+    commit_model_weights, prove_committed_shard_dag, verify_committed_shard_dag_bytes,
+    verify_sequence_shift, Store,
 };
 
 fn load_i32(path: &str) -> Vec<Goldilocks> {
@@ -32,7 +33,7 @@ fn main() {
 
     let mut store = Store::new();
     let mut ops = Vec::new();
-    let (_x0, logits) = build_deepseek(&mut store, &mut ops, dir, m, 16);
+    let (_x0, logits, tokens, t) = build_deepseek(&mut store, &mut ops, dir, m, 16);
     println!("seq={m} total ops: {}", ops.len());
     let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
 
@@ -46,7 +47,7 @@ fn main() {
     let commit_t = t0.elapsed();
 
     let t1 = std::time::Instant::now();
-    let proof = prove_committed_shard_dag(&mut store, &ops, 718, &whir, &cached, &mut rng);
+    let proof = prove_committed_shard_dag(&mut store, &ops, 718, &whir, &cached, &mut rng, tokens, t);
     let prove_t = t1.elapsed();
 
     let t2 = std::time::Instant::now();

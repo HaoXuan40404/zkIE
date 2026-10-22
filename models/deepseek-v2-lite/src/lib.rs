@@ -8,7 +8,7 @@
 use std::fs;
 
 use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing};
-use zkie_core::common::fixed_point::from_i32;
+use zkie_core::common::fixed_point::{from_i32, to_i32};
 use zkie_ops::compose::{causal_mask, Op, Store};
 
 pub const H: usize = 2048;
@@ -599,17 +599,31 @@ pub fn build_deepseek(
     dir: &str,
     m: usize,
     shift: u32,
-) -> (usize, usize) {
+) -> (usize, usize, usize, usize) {
     let exp_table = load_i32("models/gpt2/weights/exp_table_i32.bin");
     let rsqrt_table = load_i32("models/gpt2/weights/rsqrt_table_i32.bin");
     let silu_table = load_i32(&format!("{dir}/silu_table_i32.bin"));
-    let x0 = load_i32(&format!("{dir}/x0_i32.bin"));
     let lm_head = load_i32(&format!("{dir}/lm_head_i32.bin"));
+    let tokens_raw = load_i32(&format!("{dir}/tokens_i32.bin"));
+    let tokens = store.push_idx(tokens_raw.iter().map(|&v| to_i32(v) as u32).collect());
+    let emb_idx: Vec<u32> = (0..m)
+        .flat_map(|i| {
+            let ti = to_i32(tokens_raw[i]) as u32;
+            (0..H).map(move |d| (d * VOCAB_PAD) as u32 + ti)
+        })
+        .collect();
+    let emb_idx_t = store.push_idx(emb_idx);
+    let token_emb = store.push(vec![]);
+    ops.push(Op::Lookup {
+        idx: emb_idx_t,
+        out: token_emb,
+        table: store.push(lm_head.clone()),
+    });
     let final_norm = load_i32(&format!("{dir}/final_norm_i32.bin"));
     let cos = load_i32(&format!("{dir}/rope_cos_i32.bin"));
     let sin = load_i32(&format!("{dir}/rope_sin_i32.bin"));
 
-    let x0_t = store.push(x0[..m * H].to_vec());
+    let x0_t = token_emb;
     let exp_t = store.push(exp_table);
     let rsqrt_t = store.push(rsqrt_table);
     let silu_t = store.push(silu_table);
@@ -688,7 +702,47 @@ pub fn build_deepseek(
         k: H,
         n: VOCAB_PAD,
     });
-    (x0_t, logits)
+    let logits_scaled = store.push(vec![]);
+    ops.push(Op::Scale {
+        x: logits,
+        out: logits_scaled,
+        factor: 1,
+        shift: 13,
+    });
+    let mask: Vec<Goldilocks> = (0..VOCAB_PAD)
+        .map(|j| {
+            if j < VOCAB {
+                from_i32(0)
+            } else {
+                from_i32(-(1 << 26))
+            }
+        })
+        .collect();
+    let mask_t = store.push(broadcast(&mask, m));
+    let logits_masked = store.push(vec![]);
+    ops.push(Op::Add {
+        a: logits_scaled,
+        b: mask_t,
+        c: logits_masked,
+    });
+    let arg_sel = store.push(vec![]);
+    let arg_thr = store.push(vec![]);
+    let arg_gate = store.push(vec![]);
+    let arg_d1 = store.push(vec![]);
+    let arg_d2 = store.push(vec![]);
+    let t = store.push_idx(vec![]);
+    ops.push(Op::Argmax {
+        x: logits_masked,
+        sel: arg_sel,
+        thr: arg_thr,
+        gate: arg_gate,
+        d1: arg_d1,
+        d2: arg_d2,
+        out: t,
+        m,
+        n: VOCAB_PAD,
+    });
+    (x0_t, logits, tokens, t)
 }
 
 /// Dense FFN for layer 0 (SwiGLU with intermediate 10944).
