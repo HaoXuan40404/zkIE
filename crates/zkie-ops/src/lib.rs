@@ -6,5 +6,6 @@ pub mod par;
 pub mod projection;
 pub mod rms_norm;
 pub mod rope;
+pub mod scatter;
 pub mod softmax_scaled;
 pub mod topk;
