@@ -182,8 +182,10 @@ cargo test -p zkie-ops --lib: 36 passed.
 
 ### Remaining (performance / scale, not correctness)
 
-1. cache-reuse across runs: commit_model_weights always re-commits (no
-   cache-existence skip), so the ~17-23s commit is paid every run.
+1. cache-reuse across runs: decided NOT needed (2026-10-22). Commit is a
+   one-time per-model cost (input-independent), so the benchmark reports the
+   real commit time (GPT-2 16.5s / TimesFM 23.5s / Gemma 3 17.8s) rather than
+   a cached "2s" figure. Keep commit_model_weights as always-commit.
 2. proof size: GPT-2 1.74GB, dominated by the store-free witness (softmax
    indices/e, etc.).
 3. prove time: GPT-2 ~68s, the longest of the three phases.
