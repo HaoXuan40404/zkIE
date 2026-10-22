@@ -750,6 +750,12 @@ pub enum Op {
         out: T,
         b: usize,
     },
+    CombineIdx {
+        a: T,
+        b: T,
+        out: T,
+        scale: usize,
+    },
 }
 
 /// A proof for one op, kept heterogeneous because the primitives have different
@@ -783,6 +789,7 @@ pub enum OpProof {
     Gather(ScatterAddProof),
     BatchedMatMul(BatchedMatmulProof, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>),
     IdxBroadcast,
+    CombineIdx,
     ScaleGate,
 }
 
@@ -922,6 +929,7 @@ impl Op {
             Op::Gather { weighted, token_id, .. } => vec![weighted, token_id],
             Op::BatchedMatMul { a, w, .. } => vec![a, w],
             Op::IdxBroadcast { base, .. } => vec![base],
+            Op::CombineIdx { a, b, .. } => vec![a, b],
         }
     }
 
@@ -972,6 +980,7 @@ impl Op {
             Op::Gather { out, .. } => vec![out],
             Op::BatchedMatMul { c, .. } => vec![c],
             Op::IdxBroadcast { out, .. } => vec![out],
+            Op::CombineIdx { out, .. } => vec![out],
         }
     }
 }
@@ -1166,6 +1175,17 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                         o.push(v * b as u32 + j as u32);
                     }
                 }
+                store.idx[out] = o;
+            }
+            Op::CombineIdx { a, b, out, scale } => {
+                let av = store.idx[a].clone();
+                let bv = store.idx[b].clone();
+                assert_eq!(av.len(), bv.len());
+                let o: Vec<u32> = av
+                    .iter()
+                    .zip(bv.iter())
+                    .map(|(&x, &y)| x * scale as u32 + y)
+                    .collect();
                 store.idx[out] = o;
             }
             Op::ScaleGate {
@@ -1556,6 +1576,9 @@ pub fn prove_shard_precomputed(
             }
             Op::IdxBroadcast { .. } => {
                 op_proofs.push(OpProof::IdxBroadcast);
+            }
+            Op::CombineIdx { .. } => {
+                op_proofs.push(OpProof::CombineIdx);
             }
             Op::ScaleGate { .. } => {
                 op_proofs.push(OpProof::ScaleGate);
@@ -1960,6 +1983,7 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                 }
             }
             (Op::IdxBroadcast { .. }, OpProof::IdxBroadcast) => {}
+            (Op::CombineIdx { .. }, OpProof::CombineIdx) => {}
             (Op::ScaleGate { .. }, OpProof::ScaleGate) => {}
             (Op::Relu { .. }, OpProof::Relu) => {}
             (
@@ -4568,7 +4592,8 @@ mod tests {
             | OpProof::SoftmaxIndex
             | OpProof::GeluIndex
             | OpProof::StableSoftmaxIndex
-            | OpProof::IdxBroadcast => false,
+            | OpProof::IdxBroadcast
+            | OpProof::CombineIdx => false,
             // Carry their own argument.
             OpProof::MatMul(..)
             | OpProof::Projection(..)
@@ -4603,10 +4628,11 @@ mod tests {
             OpProof::GeluIndex,
             OpProof::StableSoftmaxIndex,
             OpProof::IdxBroadcast,
+            OpProof::CombineIdx,
         ];
         assert_eq!(
             unproven.len(),
-            9,
+            10,
             "the set of ops with no proof of their own changed; see the succinct-verification thread before adjusting"
         );
         for p in &unproven {
