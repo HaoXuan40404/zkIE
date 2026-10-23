@@ -920,10 +920,6 @@ pub struct TableColumn {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct OpShardProof {
     pub ops: Vec<OpProof>,
-    /// Batched rsqrt lookup (one sumcheck for every RmsNorm in this shard).
-    pub rsqrt_lookup: Option<FractionalProof>,
-    pub rsqrt_alpha: Goldilocks,
-    pub rsqrt_beta: Goldilocks,
     /// `binds[j]` merges the claims of tensor `bound[j]`.
     pub bound: Vec<T>,
     pub binds: Vec<SamePolyProof>,
@@ -1606,7 +1602,6 @@ pub fn prove_shard_precomputed(
     // (tensor_id, point, eval) claims emitted by each op's proof.
     let mut claims: Vec<(T, Vec<Goldilocks>, Goldilocks)> = Vec::new();
     let mut op_proofs = Vec::with_capacity(ops.len());
-    let mut rsqrt_table_id: Option<T> = None;
     let mut lookup_by_table: std::collections::BTreeMap<T, Vec<(Vec<u32>, Vec<Goldilocks>)>> =
         std::collections::BTreeMap::new();
 
@@ -1896,8 +1891,7 @@ pub fn prove_shard_precomputed(
                 d,
                 n_real,
             } => {
-                rsqrt_table_id = Some(rsqrt_table);
-                let p = prove_rms_norm(
+                let (p, ridx, rvals) = prove_rms_norm(
                     store.get(x),
                     store.get(w),
                     store.get(rsqrt_table),
@@ -1906,6 +1900,10 @@ pub fn prove_shard_precomputed(
                     n_real,
                     rng,
                 );
+                lookup_by_table
+                    .entry(rsqrt_table)
+                    .or_insert(Vec::new())
+                    .push((ridx, rvals));
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
                 claims.push((w, p.r_out.clone(), mle::eval(store.get(w), &p.r_out)));
                 op_proofs.push(OpProof::RmsNorm(p));
@@ -2014,24 +2012,6 @@ pub fn prove_shard_precomputed(
         binds.push(sp);
     }
 
-    // Batch every RmsNorm rsqrt lookup in this shard into a single sumcheck.
-    let mut rsqrt_idx: Vec<&[u32]> = Vec::new();
-    let mut rsqrt_vals: Vec<&[Goldilocks]> = Vec::new();
-    for p in &op_proofs {
-        if let OpProof::RmsNorm(rp) = p {
-            rsqrt_idx.push(&rp.s_index);
-            rsqrt_vals.push(&rp.rstd_vals);
-        }
-    }
-    let (rsqrt_lookup, rsqrt_alpha, rsqrt_beta) = if rsqrt_idx.is_empty() {
-        (None, Goldilocks::ZERO, Goldilocks::ZERO)
-    } else {
-        let a = rng.field();
-        let b = rng.field();
-        let tid = rsqrt_table_id.expect("rsqrt table");
-        let pr = prove_lookup_fractional_batch(&rsqrt_idx, &rsqrt_vals, store.get(tid), a, b, rng);
-        (Some(pr), a, b)
-    };
     let mut witness_columns = Vec::new();
     let mut table_columns = Vec::new();
     for (table, lookups) in &lookup_by_table {
@@ -2068,9 +2048,6 @@ pub fn prove_shard_precomputed(
 
     OpShardProof {
         ops: op_proofs,
-        rsqrt_lookup,
-        rsqrt_alpha,
-        rsqrt_beta,
         bound,
         binds,
         claims: raw_claims,
@@ -2098,9 +2075,6 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
     ];
 
     let mut claims: Vec<(T, Vec<Goldilocks>, Goldilocks)> = Vec::new();
-    let mut rsqrt_idx: Vec<Vec<u32>> = Vec::new();
-    let mut rsqrt_vals: Vec<Vec<Goldilocks>> = Vec::new();
-    let mut rsqrt_table_id: Option<T> = None;
     for (op, p) in ops.iter().zip(&proof.ops) {
         match (op, p) {
             (Op::Transpose { .. }, OpProof::Transpose) => {
@@ -2189,13 +2163,10 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                     return false;
                 }
             }
-            (Op::RmsNorm { rsqrt_table, n_real, .. }, OpProof::RmsNorm(p)) => {
+            (Op::RmsNorm { n_real, .. }, OpProof::RmsNorm(p)) => {
                 if !verify_rms_norm(p, *n_real) {
                     return false;
                 }
-                rsqrt_idx.push(p.s_index.clone());
-                rsqrt_vals.push(p.rstd_vals.clone());
-                rsqrt_table_id = Some(*rsqrt_table);
             }
             (Op::RoPE { shift, .. }, OpProof::RoPE(p)) => {
                 if !verify_rope(p, *shift) {
@@ -2238,24 +2209,6 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
         if verify_same_poly(&proof.binds[i], &bound_claims[i]).is_none() {
             return false;
         }
-    }
-    // Verify the batched rsqrt lookup over every RmsNorm in this shard.
-    if let Some(rp) = &proof.rsqrt_lookup {
-        let tid = rsqrt_table_id.expect("rsqrt table");
-        let refs_idx: Vec<&[u32]> = rsqrt_idx.iter().map(|v| v.as_slice()).collect();
-        let refs_vals: Vec<&[Goldilocks]> = rsqrt_vals.iter().map(|v| v.as_slice()).collect();
-        if !verify_lookup_fractional_batch(
-            rp,
-            &refs_idx,
-            &refs_vals,
-            tables[tid],
-            proof.rsqrt_alpha,
-            proof.rsqrt_beta,
-        ) {
-            return false;
-        }
-    } else if !rsqrt_idx.is_empty() {
-        return false;
     }
     true
 }

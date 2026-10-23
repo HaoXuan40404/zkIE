@@ -25,8 +25,6 @@ fn round_div(a: i64, b: i64) -> i64 {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct RmsNormProof {
     pub trunc: VirtualProof,
-    pub s_index: Vec<u32>,
-    pub rstd_vals: Vec<Goldilocks>,
     pub out: VirtualProof,
     pub rem_split: VirtualProof,
     pub rem_range: FractionalProof,
@@ -105,7 +103,7 @@ pub fn prove_rms_norm(
     d: usize,
     n_real: usize,
     rng: &mut impl ChallengeSource,
-) -> RmsNormProof {
+) -> (RmsNormProof, Vec<u32>, Vec<Goldilocks>) {
     let (ms, s_index, rstd, out, rem_out, rem_lo, rem_hi, sum_sq, rem_s) =
         rms_norm_forward(x, w, rsqrt_table, m, d, n_real);
 
@@ -180,21 +178,23 @@ pub fn prove_rms_norm(
         rng,
     );
 
-    RmsNormProof {
-        trunc: trunc_proof,
+    (
+        RmsNormProof {
+            trunc: trunc_proof,
+            out: out_proof,
+            rem_split,
+            rem_range,
+            trunc_ch,
+            r_out,
+            rem_split_ch,
+            alpha_r,
+            beta_r,
+            rem_lo,
+            rem_hi,
+        },
         s_index,
-        rstd_vals: rstd.clone(),
-        out: out_proof,
-        rem_split,
-        rem_range,
-        trunc_ch,
-        r_out,
-        rem_split_ch,
-        alpha_r,
-        beta_r,
-        rem_lo,
-        rem_hi,
-    }
+        rstd,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -278,29 +278,8 @@ mod tests {
         let rsqrt_table: Vec<Goldilocks> = (0..64).map(|_| from_i64(65536)).collect();
         let (ms, _s_index, _rstd, out, _rem_out, _rem_lo, _rem_hi, _sum_sq, _rem_s) =
             rms_norm_forward(&x, &w, &rsqrt_table, m, d, n_real);
-        let proof = prove_rms_norm(&x, &w, &rsqrt_table, m, d, n_real, &mut rng);
+        let (proof, _ridx, _rvals) = prove_rms_norm(&x, &w, &rsqrt_table, m, d, n_real, &mut rng);
         assert!(verify_rms_norm(&proof, n_real));
-        // The rsqrt lookup is deferred to the shard level; verify it through the
-        // batch primitive here to keep the roundtrip test complete.
-        let mut rng2 = XorShift64::new(0xABCD_EF01);
-        let alpha = rng2.field();
-        let beta = rng2.field();
-        let rsqrt_p = prove_lookup_fractional_batch(
-            &[&proof.s_index],
-            &[&proof.rstd_vals],
-            &rsqrt_table,
-            alpha,
-            beta,
-            &mut rng2,
-        );
-        assert!(verify_lookup_fractional_batch(
-            &rsqrt_p,
-            &[&proof.s_index],
-            &[&proof.rstd_vals],
-            &rsqrt_table,
-            alpha,
-            beta,
-        ));
         assert_eq!(ms.len(), m);
         assert_eq!(out.len(), m * d);
     }
