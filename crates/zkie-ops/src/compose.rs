@@ -2688,26 +2688,30 @@ pub struct SelOpening {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct GatherOpening {
-    pub commitment_num: zkie_core::pcs::whir::Commitment,
-    pub commitment_den: zkie_core::pcs::whir::Commitment,
+    pub commitment_num_source: zkie_core::pcs::whir::Commitment,
+    pub commitment_den_source: zkie_core::pcs::whir::Commitment,
+    pub commitment_num_target: zkie_core::pcs::whir::Commitment,
+    pub commitment_den_target: zkie_core::pcs::whir::Commitment,
     pub commitment_weighted: zkie_core::pcs::whir::Commitment,
     pub commitment_gate: zkie_core::pcs::whir::Commitment,
     pub commitment_out: zkie_core::pcs::whir::Commitment,
-    pub arity_hist: usize,
     pub arity_src: usize,
     pub arity_tgt: usize,
     pub arity_gate: usize,
-    pub point_hist: Vec<Goldilocks>,
     pub point_src: Vec<Goldilocks>,
     pub point_tgt: Vec<Goldilocks>,
     pub point_gate: Vec<Goldilocks>,
-    pub opening_num: zkie_core::pcs::whir::Proof,
-    pub opening_den: zkie_core::pcs::whir::Proof,
+    pub opening_num_source: zkie_core::pcs::whir::Proof,
+    pub opening_den_source: zkie_core::pcs::whir::Proof,
+    pub opening_num_target: zkie_core::pcs::whir::Proof,
+    pub opening_den_target: zkie_core::pcs::whir::Proof,
     pub opening_weighted: zkie_core::pcs::whir::Proof,
     pub opening_gate: zkie_core::pcs::whir::Proof,
     pub opening_out: zkie_core::pcs::whir::Proof,
-    pub eval_num: Goldilocks,
-    pub eval_den: Goldilocks,
+    pub eval_num_source: Goldilocks,
+    pub eval_den_source: Goldilocks,
+    pub eval_num_target: Goldilocks,
+    pub eval_den_target: Goldilocks,
     pub eval_weighted: Goldilocks,
     pub eval_gate: Goldilocks,
     pub eval_out: Goldilocks,
@@ -3203,28 +3207,31 @@ pub fn prove_committed_shard_dag(
         for (op, op_proof) in ops[s..e].iter().zip(shards[si].ops.iter_mut()) {
             if let (Op::Gather { m, h, .. }, OpProof::Gather(sp)) = (op, op_proof) {
                 let s_len = sp.token_id.len();
-                let arity_hist = (s_len * h + m * h).next_power_of_two().trailing_zeros() as usize;
                 let arity_src = (s_len * h).next_power_of_two().trailing_zeros() as usize;
                 let arity_tgt = (m * h).next_power_of_two().trailing_zeros() as usize;
+                let arity_gate = s_len.next_power_of_two().trailing_zeros() as usize;
                 let pad = |v: &[Goldilocks], arity: usize| -> Vec<Goldilocks> {
                     let total = 1usize << arity;
                     let mut o = vec![Goldilocks::ZERO; total];
                     o[..v.len()].copy_from_slice(v);
                     o
                 };
+                let num_source_pad = pad(&sp.num_source, arity_src);
+                let den_source_pad = pad(&sp.den_source, arity_src);
+                let num_target_pad = pad(&sp.num_target, arity_tgt);
+                let den_target_pad = pad(&sp.den_target, arity_tgt);
                 let weighted_pad = pad(&sp.weighted, arity_src);
                 let out_pad = pad(&sp.out, arity_tgt);
-                let num_pad = pad(&sp.num, arity_hist);
-                let den_pad = pad(&sp.den, arity_hist);
-                let gate_pad = pad(&sp.gate, (s_len.next_power_of_two().trailing_zeros() as usize));
+                let gate_pad = pad(&sp.gate, arity_gate);
 
-                let hist_bw = zkie_core::pcs::whir::Whir::with_params(arity_hist, 90, zkie_core::pcs::whir::Whir::required_pow_bits(arity_hist, 90));
                 let src_bw = zkie_core::pcs::whir::Whir::with_params(arity_src, 90, zkie_core::pcs::whir::Whir::required_pow_bits(arity_src, 90));
                 let tgt_bw = zkie_core::pcs::whir::Whir::with_params(arity_tgt, 90, zkie_core::pcs::whir::Whir::required_pow_bits(arity_tgt, 90));
-                let gate_bw = zkie_core::pcs::whir::Whir::with_params(gate_pad.len().trailing_zeros() as usize, 90, zkie_core::pcs::whir::Whir::required_pow_bits(gate_pad.len().trailing_zeros() as usize, 90));
+                let gate_bw = zkie_core::pcs::whir::Whir::with_params(arity_gate, 90, zkie_core::pcs::whir::Whir::required_pow_bits(arity_gate, 90));
 
-                let c_num = zkie_core::pcs::committed::commit(&hist_bw, &num_pad);
-                let c_den = zkie_core::pcs::committed::commit(&hist_bw, &den_pad);
+                let c_num_source = zkie_core::pcs::committed::commit(&src_bw, &num_source_pad);
+                let c_den_source = zkie_core::pcs::committed::commit(&src_bw, &den_source_pad);
+                let c_num_target = zkie_core::pcs::committed::commit(&tgt_bw, &num_target_pad);
+                let c_den_target = zkie_core::pcs::committed::commit(&tgt_bw, &den_target_pad);
                 let c_weighted = zkie_core::pcs::committed::commit(&src_bw, &weighted_pad);
                 let c_out = zkie_core::pcs::committed::commit(&tgt_bw, &out_pad);
                 let c_gate = zkie_core::pcs::committed::commit(&gate_bw, &gate_pad);
@@ -3232,61 +3239,65 @@ pub fn prove_committed_shard_dag(
                 let mut ts = Transcript::new(b"zkie-committed-gather-v1");
                 absorb_statement(&mut ts, ops, ops_per_shard);
                 ts.absorb_u64(si as u64);
-                ts.absorb(&bincode::serialize(&c_num.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_den.commitment).unwrap());
+                ts.absorb(&bincode::serialize(&c_num_source.commitment).unwrap());
+                ts.absorb(&bincode::serialize(&c_den_source.commitment).unwrap());
+                ts.absorb(&bincode::serialize(&c_num_target.commitment).unwrap());
+                ts.absorb(&bincode::serialize(&c_den_target.commitment).unwrap());
                 ts.absorb(&bincode::serialize(&c_weighted.commitment).unwrap());
                 ts.absorb(&bincode::serialize(&c_out.commitment).unwrap());
                 ts.absorb(&bincode::serialize(&c_gate.commitment).unwrap());
                 let alpha = ts.field();
                 let gamma: Vec<Goldilocks> = (0..*h).map(|_| ts.field()).collect();
 
-                // re-run the histogram fractional sumcheck
-                let full_r = ts.field_vec(arity_hist);
-                let cs = ts.field_vec(arity_hist);
-                let new_frac = prove_fractional_with_challenges(sp.num.clone(), sp.den.clone(), &full_r, &cs);
-                let (point_hist, num_leaf, den_leaf) = fractional_leaf(&new_frac);
+                let full_r_src = ts.field_vec(arity_src);
+                let cs_src = ts.field_vec(arity_src);
+                let new_src = prove_fractional_with_challenges(sp.num_source.clone(), sp.den_source.clone(), &full_r_src, &cs_src);
+                let (point_src, num_leaf_src, den_leaf_src) = fractional_leaf(&new_src);
+                let full_r_tgt = ts.field_vec(arity_tgt);
+                let cs_tgt = ts.field_vec(arity_tgt);
+                let new_tgt = prove_fractional_with_challenges(sp.num_target.clone(), sp.den_target.clone(), &full_r_tgt, &cs_tgt);
+                let (point_tgt, num_leaf_tgt, den_leaf_tgt) = fractional_leaf(&new_tgt);
 
-                // open num/den at histogram leaf
-                let (open_num, ev_num) = hist_bw.open(c_num.prover_data.clone(), &c_num.protocol, &point_hist);
-                let (open_den, ev_den) = hist_bw.open(c_den.prover_data.clone(), &c_den.protocol, &point_hist);
-
-                // product check source point (already in sp.r_prod_source)
-                let r_ps = sp.r_prod_source.clone();
-                let (open_weighted, ev_weighted) = src_bw.open(c_weighted.prover_data.clone(), &c_weighted.protocol, &r_ps);
-                // gate sub-point: high log2(s_len) bits of r_ps
+                let (open_num_source, ev_num_source) = src_bw.open(c_num_source.prover_data.clone(), &c_num_source.protocol, &point_src);
+                let (open_den_source, ev_den_source) = src_bw.open(c_den_source.prover_data.clone(), &c_den_source.protocol, &point_src);
+                let (open_num_target, ev_num_target) = tgt_bw.open(c_num_target.prover_data.clone(), &c_num_target.protocol, &point_tgt);
+                let (open_den_target, ev_den_target) = tgt_bw.open(c_den_target.prover_data.clone(), &c_den_target.protocol, &point_tgt);
+                let (open_weighted, ev_weighted) = src_bw.open(c_weighted.prover_data.clone(), &c_weighted.protocol, &sp.r_prod_source);
                 let h_log = h.trailing_zeros() as usize;
-                let r_pos: Vec<Goldilocks> = r_ps[h_log..].to_vec();
-                let (open_gate, ev_gate) = gate_bw.open(c_gate.prover_data.clone(), &c_gate.protocol, &r_pos);
+                let point_gate: Vec<Goldilocks> = sp.r_prod_source[h_log..].to_vec();
+                let (open_gate, ev_gate) = gate_bw.open(c_gate.prover_data.clone(), &c_gate.protocol, &point_gate);
+                let (open_out, ev_out) = tgt_bw.open(c_out.prover_data.clone(), &c_out.protocol, &sp.r_prod_target);
 
-                // product check target point
-                let r_pt = sp.r_prod_target.clone();
-                let (open_out, ev_out) = tgt_bw.open(c_out.prover_data.clone(), &c_out.protocol, &r_pt);
-
-                sp.frac = new_frac;
+                sp.source_side = new_src;
+                sp.target_side = new_tgt;
                 sp.alpha = alpha;
                 sp.gamma = gamma.clone();
 
                 gather_openings.push(GatherOpening {
-                    commitment_num: c_num.commitment,
-                    commitment_den: c_den.commitment,
+                    commitment_num_source: c_num_source.commitment,
+                    commitment_den_source: c_den_source.commitment,
+                    commitment_num_target: c_num_target.commitment,
+                    commitment_den_target: c_den_target.commitment,
                     commitment_weighted: c_weighted.commitment,
                     commitment_gate: c_gate.commitment,
                     commitment_out: c_out.commitment,
-                    arity_hist,
                     arity_src,
                     arity_tgt,
-                    arity_gate: gate_pad.len().trailing_zeros() as usize,
-                    point_hist,
-                    point_src: r_ps,
-                    point_tgt: r_pt,
-                    point_gate: r_pos,
-                    opening_num: open_num,
-                    opening_den: open_den,
+                    arity_gate,
+                    point_src,
+                    point_tgt,
+                    point_gate,
+                    opening_num_source: open_num_source,
+                    opening_den_source: open_den_source,
+                    opening_num_target: open_num_target,
+                    opening_den_target: open_den_target,
                     opening_weighted: open_weighted,
                     opening_gate: open_gate,
                     opening_out: open_out,
-                    eval_num: ev_num,
-                    eval_den: ev_den,
+                    eval_num_source: ev_num_source,
+                    eval_den_source: ev_den_source,
+                    eval_num_target: ev_num_target,
+                    eval_den_target: ev_den_target,
                     eval_weighted: ev_weighted,
                     eval_gate: ev_gate,
                     eval_out: ev_out,
@@ -3464,27 +3475,31 @@ pub fn verify_committed_shard_dag(
         }
     }
     for go in &proof.gather_openings {
-        let hist_bw = zkie_core::pcs::whir::Whir::with_params(go.arity_hist, 90, zkie_core::pcs::whir::Whir::required_pow_bits(go.arity_hist, 90));
-        let hist_protocol = hist_bw.opening_protocol(go.arity_hist, 1);
-        if hist_bw.verify(&go.commitment_num, &go.opening_num, &hist_protocol, &go.point_hist).ok() != Some(go.eval_num) {
-            return false;
-        }
-        if hist_bw.verify(&go.commitment_den, &go.opening_den, &hist_protocol, &go.point_hist).ok() != Some(go.eval_den) {
-            return false;
-        }
         let src_bw = zkie_core::pcs::whir::Whir::with_params(go.arity_src, 90, zkie_core::pcs::whir::Whir::required_pow_bits(go.arity_src, 90));
         let src_protocol = src_bw.opening_protocol(go.arity_src, 1);
+        if src_bw.verify(&go.commitment_num_source, &go.opening_num_source, &src_protocol, &go.point_src).ok() != Some(go.eval_num_source) {
+            return false;
+        }
+        if src_bw.verify(&go.commitment_den_source, &go.opening_den_source, &src_protocol, &go.point_src).ok() != Some(go.eval_den_source) {
+            return false;
+        }
         if src_bw.verify(&go.commitment_weighted, &go.opening_weighted, &src_protocol, &go.point_src).ok() != Some(go.eval_weighted) {
+            return false;
+        }
+        let tgt_bw = zkie_core::pcs::whir::Whir::with_params(go.arity_tgt, 90, zkie_core::pcs::whir::Whir::required_pow_bits(go.arity_tgt, 90));
+        let tgt_protocol = tgt_bw.opening_protocol(go.arity_tgt, 1);
+        if tgt_bw.verify(&go.commitment_num_target, &go.opening_num_target, &tgt_protocol, &go.point_tgt).ok() != Some(go.eval_num_target) {
+            return false;
+        }
+        if tgt_bw.verify(&go.commitment_den_target, &go.opening_den_target, &tgt_protocol, &go.point_tgt).ok() != Some(go.eval_den_target) {
+            return false;
+        }
+        if tgt_bw.verify(&go.commitment_out, &go.opening_out, &tgt_protocol, &go.point_tgt).ok() != Some(go.eval_out) {
             return false;
         }
         let gate_bw = zkie_core::pcs::whir::Whir::with_params(go.arity_gate, 90, zkie_core::pcs::whir::Whir::required_pow_bits(go.arity_gate, 90));
         let gate_protocol = gate_bw.opening_protocol(go.arity_gate, 1);
         if gate_bw.verify(&go.commitment_gate, &go.opening_gate, &gate_protocol, &go.point_gate).ok() != Some(go.eval_gate) {
-            return false;
-        }
-        let tgt_bw = zkie_core::pcs::whir::Whir::with_params(go.arity_tgt, 90, zkie_core::pcs::whir::Whir::required_pow_bits(go.arity_tgt, 90));
-        let tgt_protocol = tgt_bw.opening_protocol(go.arity_tgt, 1);
-        if tgt_bw.verify(&go.commitment_out, &go.opening_out, &tgt_protocol, &go.point_tgt).ok() != Some(go.eval_out) {
             return false;
         }
     }
@@ -3618,8 +3633,10 @@ pub fn verify_committed_shard_dag(
                     let mut ts = Transcript::new(b"zkie-committed-gather-v1");
                     absorb_statement(&mut ts, ops, ops_per_shard);
                     ts.absorb_u64(si as u64);
-                    ts.absorb(&bincode::serialize(&go.commitment_num).unwrap());
-                    ts.absorb(&bincode::serialize(&go.commitment_den).unwrap());
+                    ts.absorb(&bincode::serialize(&go.commitment_num_source).unwrap());
+                    ts.absorb(&bincode::serialize(&go.commitment_den_source).unwrap());
+                    ts.absorb(&bincode::serialize(&go.commitment_num_target).unwrap());
+                    ts.absorb(&bincode::serialize(&go.commitment_den_target).unwrap());
                     ts.absorb(&bincode::serialize(&go.commitment_weighted).unwrap());
                     ts.absorb(&bincode::serialize(&go.commitment_out).unwrap());
                     ts.absorb(&bincode::serialize(&go.commitment_gate).unwrap());

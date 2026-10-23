@@ -5,17 +5,20 @@
 
 use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::from_i64;
-use zkie_core::common::logup_gkr::{prove_fractional, verify_fractional, FractionalProof};
+use zkie_core::common::logup_gkr::{prove_fractional, verify_fractional, verify_lookup_split, FractionalProof};
 use zkie_core::common::mle;
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ScatterAddProof {
-    pub frac: FractionalProof,
+    pub source_side: FractionalProof,
+    pub target_side: FractionalProof,
     pub alpha: Goldilocks,
     pub gamma: Vec<Goldilocks>,
-    pub num: Vec<Goldilocks>,
-    pub den: Vec<Goldilocks>,
+    pub num_source: Vec<Goldilocks>,
+    pub den_source: Vec<Goldilocks>,
+    pub num_target: Vec<Goldilocks>,
+    pub den_target: Vec<Goldilocks>,
     pub prod_source: VirtualProof,
     pub prod_target: VirtualProof,
     pub r_prod_source: Vec<Goldilocks>,
@@ -59,25 +62,28 @@ pub fn prove_scatter_add(
     assert_eq!(out.len(), m * h);
     let alpha = rng.field();
     let gamma: Vec<Goldilocks> = (0..h).map(|_| rng.field()).collect();
-    let total = (s * h + m * h).next_power_of_two();
-    let mut num = vec![Goldilocks::ZERO; total];
-    let mut den = vec![Goldilocks::ONE; total];
+    let src_total = (s * h).next_power_of_two();
+    let tgt_total = (m * h).next_power_of_two();
+    let mut num_source = vec![Goldilocks::ZERO; src_total];
+    let mut den_source = vec![alpha; src_total];
+    let mut num_target = vec![Goldilocks::ZERO; tgt_total];
+    let mut den_target = vec![alpha; tgt_total];
     for pos in 0..s {
         for d in 0..h {
-            num[pos * h + d] = gamma[d] * weighted[pos * h + d] * gate[pos];
-            den[pos * h + d] = alpha - Goldilocks::from_u64(token_id[pos] as u64);
+            num_source[pos * h + d] = gamma[d] * weighted[pos * h + d] * gate[pos];
+            den_source[pos * h + d] = alpha - Goldilocks::from_u64(token_id[pos] as u64);
         }
     }
     for t in 0..m {
         for d in 0..h {
-            num[s * h + t * h + d] = from_i64(-1) * gamma[d] * out[t * h + d];
-            den[s * h + t * h + d] = alpha - Goldilocks::from_u64(t as u64);
+            num_target[t * h + d] = gamma[d] * out[t * h + d];
+            den_target[t * h + d] = alpha - Goldilocks::from_u64(t as u64);
         }
     }
-    let frac = prove_fractional(num.clone(), den.clone(), rng);
+    let source_side = prove_fractional(num_source.clone(), den_source.clone(), rng);
+    let target_side = prove_fractional(num_target.clone(), den_target.clone(), rng);
 
-    // Product check (source): num[pos*h+d] == gamma[d]*weighted[pos*h+d]*gate[pos]
-    let src_total = (s * h).next_power_of_two();
+    // Product check (source): num_source[pos*h+d] == gamma[d]*weighted[pos*h+d]*gate[pos]
     let src_arity = src_total.trailing_zeros() as usize;
     let r_prod_source: Vec<Goldilocks> = (0..src_arity).map(|_| rng.field()).collect();
     let eq_src = mle::eq_evals(&r_prod_source);
@@ -90,7 +96,7 @@ pub fn prove_scatter_add(
             let idx = pos * h + d;
             gamma_b[idx] = gamma[d];
             gate_b[idx] = gate[pos];
-            num_src[idx] = num[idx];
+            num_src[idx] = num_source[idx];
             weighted_pad[idx] = weighted[idx];
         }
     }
@@ -104,8 +110,7 @@ pub fn prove_scatter_add(
         &r_prod_source,
     );
 
-    // Product check (target): num[s*h+t*h+d] == -gamma[d]*out[t*h+d]
-    let tgt_total = (m * h).next_power_of_two();
+    // Product check (target): num_target[t*h+d] == gamma[d]*out[t*h+d]
     let tgt_arity = tgt_total.trailing_zeros() as usize;
     let r_prod_target: Vec<Goldilocks> = (0..tgt_arity).map(|_| rng.field()).collect();
     let eq_tgt = mle::eq_evals(&r_prod_target);
@@ -116,7 +121,7 @@ pub fn prove_scatter_add(
         for d in 0..h {
             let idx = t * h + d;
             gamma_b2[idx] = gamma[d];
-            num_tgt[idx] = num[s * h + idx];
+            num_tgt[idx] = num_target[idx];
             out_pad[idx] = out[idx];
         }
     }
@@ -124,18 +129,21 @@ pub fn prove_scatter_add(
         &[&eq_tgt, &num_tgt, &gamma_b2, &out_pad],
         &[
             (Goldilocks::ONE, vec![0usize, 1usize]),
-            (Goldilocks::ONE, vec![0usize, 2usize, 3usize]),
+            (Goldilocks::ZERO - Goldilocks::ONE, vec![0usize, 2usize, 3usize]),
         ],
         Goldilocks::ZERO,
         &r_prod_target,
     );
 
     ScatterAddProof {
-        frac,
+        source_side,
+        target_side,
         alpha,
         gamma,
-        num,
-        den,
+        num_source,
+        den_source,
+        num_target,
+        den_target,
         prod_source,
         prod_target,
         r_prod_source,
@@ -160,7 +168,7 @@ pub fn verify_scatter_add(
     assert_eq!(weighted.len(), s * h);
     assert_eq!(gate.len(), s);
     assert_eq!(out.len(), m * h);
-    if !verify_fractional(&proof.frac, proof.num.clone(), proof.den.clone(), Goldilocks::ZERO) {
+    if !verify_lookup_split(&proof.source_side, &proof.target_side) {
         return false;
     }
 
@@ -175,7 +183,7 @@ pub fn verify_scatter_add(
             let idx = pos * h + d;
             gamma_b[idx] = proof.gamma[d];
             gate_b[idx] = gate[pos];
-            num_src[idx] = proof.num[idx];
+            num_src[idx] = proof.num_source[idx];
             weighted_pad[idx] = weighted[idx];
         }
     }
@@ -200,7 +208,7 @@ pub fn verify_scatter_add(
         return false;
     }
 
-    // Product check (target): num_target == -gamma * out
+    // Product check (target): num_target == gamma * out
     let tgt_total = (m * h).next_power_of_two();
     let mut gamma_b2 = vec![Goldilocks::ZERO; tgt_total];
     let mut num_tgt = vec![Goldilocks::ZERO; tgt_total];
@@ -209,7 +217,7 @@ pub fn verify_scatter_add(
         for d in 0..h {
             let idx = t * h + d;
             gamma_b2[idx] = proof.gamma[d];
-            num_tgt[idx] = proof.num[s * h + idx];
+            num_tgt[idx] = proof.num_target[idx];
             out_pad[idx] = out[idx];
         }
     }
@@ -224,7 +232,7 @@ pub fn verify_scatter_add(
         &proof.prod_target,
         &[
             (Goldilocks::ONE, vec![0usize, 1usize]),
-            (Goldilocks::ONE, vec![0usize, 2usize, 3usize]),
+            (Goldilocks::ZERO - Goldilocks::ONE, vec![0usize, 2usize, 3usize]),
         ],
         Goldilocks::ZERO,
         &proof.r_prod_target,
