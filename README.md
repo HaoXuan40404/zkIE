@@ -128,16 +128,16 @@ To add a new model, see [docs/adding-a-model.md](docs/adding-a-model.md).
 Measured on a 64-thread CPU. Full detail and the reasoning behind the numbers
 is in [`docs/benchmarks.md`](docs/benchmarks.md).
 
-| Model | Active / Total params | Setup | Prove | Verify | argmax | Peak RSS | Proof size |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| TimesFM 1.0 200M | 200M / 200M | seq=16, 108 ops/shard | ~14.9 s | ~2.9 s | - | ~17.3 GB | — |
-| GPT-2 124M | 124M / 124M | seq=16, 13 shards (per layer, committed) | ~101.3 s | ~1.0 s | 16/16 | ~16.1 GB | ~24.9 MB |
-| GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer) | ~49.4 s | ~26.7 s | 512/512 | ~29.6 GB | — |
-| Gemma 3 270M | 270M / 270M | seq=16, 22 shards (per layer) | ~42.2 s | ~44.7 s | 16/16 | ~37.1 GB | — |
-| Gemma 3 270M | 270M / 270M | seq=512, 22 shards (per layer) | ~154.9 s | ~113.0 s | 512/512 | ~35.4 GB | — |
-| DeepSeek-V2-Lite | 2.4B / 15.7B | seq=16, 12 shards (expert-major MoE, mmap weights) | ~358.7 s (~6.0 min) | ~55.5 s | 16/16 | ~143 GB | — |
-| DeepSeek-V2-Lite | 2.4B / 15.7B | seq=512, 12 shards (expert-major MoE, mmap weights) | ~5640.0 s (~94.0 min) | ~72.1 s | 511/512 | ~207 GB | — |
-| DeepSeek-V4.1-Flash | 8B/16B* / 552B | MoE + CSA2 + vision (planned) | - | - | - | - | — |
+| Model | Active / Total params | Setup | Commit | Prove | Verify | argmax | Peak RSS | Proof size |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| TimesFM 1.0 200M | 200M / 200M | seq=16, 108 ops/shard | — | ~14.9 s | ~2.9 s | - | ~17.3 GB | — |
+| GPT-2 124M | 124M / 124M | seq=16, 13 shards (per layer, committed) | ~10.9 s | ~100.5 s | ~1.0 s | 16/16 | ~16.2 GB | ~24.9 MB |
+| GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer) | — | ~49.4 s | ~26.7 s | 512/512 | ~29.6 GB | — |
+| Gemma 3 270M | 270M / 270M | seq=16, 22 shards (per layer) | — | ~42.2 s | ~44.7 s | 16/16 | ~37.1 GB | — |
+| Gemma 3 270M | 270M / 270M | seq=512, 22 shards (per layer) | — | ~154.9 s | ~113.0 s | 512/512 | ~35.4 GB | — |
+| DeepSeek-V2-Lite | 2.4B / 15.7B | seq=16, 12 shards (expert-major MoE, mmap weights) | — | ~358.7 s (~6.0 min) | ~55.5 s | 16/16 | ~143 GB | — |
+| DeepSeek-V2-Lite | 2.4B / 15.7B | seq=512, 12 shards (expert-major MoE, mmap weights) | — | ~5640.0 s (~94.0 min) | ~72.1 s | 511/512 | ~207 GB | — |
+| DeepSeek-V4.1-Flash | 8B/16B* / 552B | MoE + CSA2 + vision (planned) | - | - | - | - | - | — |
 
 * DeepSeek-V4.1-Flash active params: 8B prefill / 16B decode.
 
