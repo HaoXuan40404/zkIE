@@ -105,6 +105,25 @@ pub fn verify_fractional(
     proof.final_num == claimed * proof.final_den
 }
 
+// Store-free verify: use the final_evals already stored in each layer
+// VirtualProof, without rebuilding the num/den fraction tree.
+// Leaf authentication (opening) restores soundness in P2/P3.
+pub fn verify_fractional_storefree(proof: &FractionalProof, claimed: Goldilocks) -> bool {
+    for layer in &proof.layers {
+        let terms = build_terms(layer.c);
+        if !verify_virtual(
+            &layer.proof,
+            &terms,
+            Goldilocks::from_u64(0),
+            &layer.r,
+            &layer.proof.final_evals,
+        ) {
+            return false;
+        }
+    }
+    proof.final_num == claimed * proof.final_den
+}
+
 /// Prove `y_i == table[x_i]` for every `i` via the fractional-sumcheck logUp:
 /// `sum_i 1/(alpha+x_i+beta*y_i) = sum_j m_j/(alpha+j+beta*table[j])`, encoded as
 /// a combined fraction list whose sum is 0 and proven with `prove_fractional`.
@@ -266,6 +285,21 @@ mod tests {
             den.clone(),
             claimed
         ));
+    }
+    #[test]
+    fn fractional_roundtrip_storefree() {
+        let mut rng = XorShift64::new(0xDEC1);
+        let n = 1usize << 6;
+        let num: Vec<Goldilocks> = (0..n).map(|_| rng.field()).collect();
+        let den: Vec<Goldilocks> = (0..n).map(|i| from_i64((i % 7) as i64 + 1)).collect();
+        let claimed: Goldilocks = (0..n).fold(Goldilocks::from_u64(0), |acc, i| {
+            acc + num[i] * den[i].inverse()
+        });
+        let mut proof = prove_fractional(num.clone(), den.clone(), &mut rng);
+        assert!(verify_fractional(&proof, num.clone(), den.clone(), claimed));
+        assert!(verify_fractional_storefree(&proof, claimed));
+        proof.layers[0].proof.final_evals[0] += Goldilocks::from_u64(1);
+        assert!(!verify_fractional_storefree(&proof, claimed));
     }
     #[test]
     fn lookup_fractional_roundtrip() {
