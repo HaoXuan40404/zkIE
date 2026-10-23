@@ -29,7 +29,7 @@ use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorSh
 use zkie_core::common::fixed_point::{from_i64, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, prove_lookup_fractional_batch, verify_lookup_fractional,
-    verify_lookup_fractional_batch, FractionalProof,
+    verify_lookup_fractional_batch, verify_lookup_fractional_chain, FractionalProof,
 };
 use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, MatmulProof};
 use zkie_core::common::batched_matmul::{self as bmm, BatchedMatmulProof};
@@ -796,7 +796,7 @@ pub enum OpProof {
     ),
     Projection(ProjectionProof),
     Add(VirtualProof, Vec<Goldilocks>),
-    Lookup(FractionalProof, Vec<u32>, Vec<Goldilocks>, Goldilocks, Goldilocks),
+    Lookup(FractionalProof),
     Softmax(SoftmaxRoundedProof),
     SoftmaxIndex,
     GeluIndex,
@@ -1764,13 +1764,7 @@ pub fn prove_shard_precomputed(
                     beta,
                     rng,
                 );
-                op_proofs.push(OpProof::Lookup(
-                    p,
-                    store.idx[idx].clone(),
-                    store.get(out).to_vec(),
-                    alpha,
-                    beta,
-                ));
+                op_proofs.push(OpProof::Lookup(p));
             }
             Op::Softmax {
                 idx,
@@ -2109,8 +2103,8 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                     return false;
                 }
             }
-            (Op::Lookup { table, .. }, OpProof::Lookup(fp, l_idx, l_out, alpha, beta)) => {
-                if !verify_lookup_fractional(fp, l_idx, l_out, tables[*table], *alpha, *beta) {
+            (Op::Lookup { .. }, OpProof::Lookup(fp)) => {
+                if !verify_lookup_fractional_chain(fp) {
                     return false;
                 }
             }
