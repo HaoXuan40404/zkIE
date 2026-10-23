@@ -1835,7 +1835,7 @@ pub fn prove_shard_precomputed(
                 m,
                 d,
             } => {
-                let p = prove_layernorm_chain(
+                let (p, ridx, rvals) = prove_layernorm_chain(
                     store.get(x),
                     store.get(w),
                     store.get(b),
@@ -1844,6 +1844,10 @@ pub fn prove_shard_precomputed(
                     d,
                     rng,
                 );
+                lookup_by_table
+                    .entry(rsqrt_table)
+                    .or_insert(Vec::new())
+                    .push((ridx, rvals));
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
                 claims.push((w, p.r_out.clone(), mle::eval(store.get(w), &p.r_out)));
                 claims.push((b, p.r_out.clone(), mle::eval(store.get(b), &p.r_out)));
@@ -2172,8 +2176,8 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
             }
             (Op::GeluIndex { .. }, OpProof::GeluIndex) => {}
             (Op::StableSoftmaxIndex { .. }, OpProof::StableSoftmaxIndex) => {}
-            (Op::Layernorm { rsqrt_table, .. }, OpProof::Layernorm(lp)) => {
-                if !verify_layernorm_chain(lp, tables[*rsqrt_table]) {
+            (Op::Layernorm { .. }, OpProof::Layernorm(lp)) => {
+                if !verify_layernorm_chain(lp) {
                     return false;
                 }
             }

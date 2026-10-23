@@ -14,15 +14,10 @@ use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct LayernormChainProof {
     pub mean_sq: VirtualProof,
-    pub rsqrt: FractionalProof,
     pub out: VirtualProof,
     pub r_mean: Vec<Goldilocks>,
     pub mean_ch: Vec<Goldilocks>,
     pub r_out: Vec<Goldilocks>,
-    pub alpha: Goldilocks,
-    pub beta: Goldilocks,
-    pub rsqrt_idx: Vec<u32>,
-    pub rsqrt_vals: Vec<Goldilocks>,
     pub mean_claim: Goldilocks,
 }
 
@@ -35,7 +30,7 @@ pub fn prove_layernorm_chain(
     m: usize,
     d: usize,
     rng: &mut impl ChallengeSource,
-) -> LayernormChainProof {
+) -> (LayernormChainProof, Vec<u32>, Vec<Goldilocks>) {
     // forward
     let mean_sq: Vec<Goldilocks> = (0..m)
         .map(|i| (0..d).fold(Goldilocks::ZERO, |a, j| a + x[i * d + j] * x[i * d + j]))
@@ -65,11 +60,6 @@ pub fn prove_layernorm_chain(
         &mean_ch,
     );
 
-    // 2. rsqrt lookup
-    let alpha = rng.field();
-    let beta = rng.field();
-    let rsqrt_proof = prove_lookup_fractional(&rsqrt_idx, &rsqrt, rsqrt_table, alpha, beta, rng);
-
     // 3. out affine: out = x * scale + b  (i.e. x*scale + b - out = 0)
     let r_out: Vec<Goldilocks> = (0..(m * d).trailing_zeros() as usize)
         .map(|_| rng.field())
@@ -82,42 +72,28 @@ pub fn prove_layernorm_chain(
     ];
     let out_proof = prove_virtual(&[x, &scale, b, &out], &terms, Goldilocks::ZERO, &r_out);
 
-    LayernormChainProof {
-        mean_sq: mean_sq_proof,
-        rsqrt: rsqrt_proof,
-        out: out_proof,
-        r_mean,
-        mean_ch,
-        r_out,
-        alpha,
-        beta,
+    (
+        LayernormChainProof {
+            mean_sq: mean_sq_proof,
+            out: out_proof,
+            r_mean,
+            mean_ch,
+            r_out,
+            mean_claim,
+        },
         rsqrt_idx,
-        rsqrt_vals: rsqrt,
-        mean_claim,
-    }
+        rsqrt,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn verify_layernorm_chain(
-    proof: &LayernormChainProof,
-    rsqrt_table: &[Goldilocks],
-) -> bool {
+pub fn verify_layernorm_chain(proof: &LayernormChainProof) -> bool {
     if !verify_virtual(
         &proof.mean_sq,
         &[(Goldilocks::ONE, vec![0usize, 1usize, 1usize])],
         proof.mean_claim,
         &proof.mean_ch,
         &proof.mean_sq.final_evals,
-    ) {
-        return false;
-    }
-    if !verify_lookup_fractional(
-        &proof.rsqrt,
-        &proof.rsqrt_idx,
-        &proof.rsqrt_vals,
-        rsqrt_table,
-        proof.alpha,
-        proof.beta,
     ) {
         return false;
     }
@@ -148,7 +124,7 @@ mod tests {
             .map(|_| from_i64((rng.next_u64() % 10) as i64 - 5))
             .collect();
         let rsqrt_table: Vec<Goldilocks> = (0..(1usize << 8)).map(|_| rng.field()).collect();
-        let proof = prove_layernorm_chain(&x, &w, &b, &rsqrt_table, m, d, &mut rng);
-        assert!(verify_layernorm_chain(&proof, &rsqrt_table));
+        let (proof, _ridx, _rvals) = prove_layernorm_chain(&x, &w, &b, &rsqrt_table, m, d, &mut rng);
+        assert!(verify_layernorm_chain(&proof));
     }
 }
