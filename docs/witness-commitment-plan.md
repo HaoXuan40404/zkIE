@@ -119,3 +119,5 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 - Range checks migrated: RmsNorm rem_lo/rem_hi and RoPE rem_f/rem_s committed (limb identity table 2^16 added to store, witness added to lookup_by_table). Verifier no longer regenerates the range table (succinct). gemma3/deepseek builders push limb_t.
 
 - MoE Scatter permutation committed: PermutationProof split into a/b fractional sides, witness a/b/num committed and opened at both leaf points, alpha Fiat-Shamir bound. deepseek compiles, 48 tests green.
+
+- limb/bin range-check tables: closed-form MLE eval (Sigma p_i*2^i) instead of commitment. Gather committed path: commit weighted/gate/out/num/den + open (witness still kept; store-free clearing is follow-up). 48 tests green, deepseek compiles.
