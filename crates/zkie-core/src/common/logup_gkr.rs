@@ -275,6 +275,13 @@ pub fn build_lookup_witness_num_den(
     (num, den)
 }
 
+pub fn pad_table(table: &[Goldilocks]) -> Vec<Goldilocks> {
+    let total = table.len().next_power_of_two();
+    let mut out = vec![Goldilocks::ZERO; total];
+    out[..table.len()].copy_from_slice(table);
+    out
+}
+
 pub fn build_lookup_table_num_den(
     m: &[u64],
     table: &[Goldilocks],
@@ -284,10 +291,11 @@ pub fn build_lookup_table_num_den(
     let t = table.len();
     let total = t.next_power_of_two();
     let mut num = vec![Goldilocks::from_u64(0); total];
-    let mut den = vec![Goldilocks::from_u64(1); total];
-    for j in 0..t {
-        num[j] = Goldilocks::from_u64(m[j]);
-        den[j] = alpha + Goldilocks::from_u64(j as u64) + beta * table[j];
+    let mut den = vec![Goldilocks::from_u64(0); total];
+    for j in 0..total {
+        num[j] = if j < t { Goldilocks::from_u64(m[j]) } else { Goldilocks::ZERO };
+        let tj = if j < t { table[j] } else { Goldilocks::ZERO };
+        den[j] = alpha + Goldilocks::from_u64(j as u64) + beta * tj;
     }
     (num, den)
 }

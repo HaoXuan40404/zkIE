@@ -30,7 +30,7 @@ use zkie_core::common::fixed_point::{from_i64, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, prove_lookup_fractional_batch, prove_lookup_fractional_columns,
     verify_lookup_fractional, verify_lookup_fractional_batch, verify_lookup_fractional_chain,
-    build_lookup_table_num_den, fractional_leaf, merge_multiplicity,
+    build_lookup_table_num_den, fractional_leaf, merge_multiplicity, pad_table,
     prove_fractional_with_challenges, prove_lookup_table, prove_lookup_witness_batch_columns,
     verify_lookup_split, FractionalProof,
 };
@@ -2698,6 +2698,12 @@ pub struct TableOpening {
     pub arity: usize,
     pub point: Vec<Goldilocks>,
     pub claimed: Goldilocks,
+    pub table_commitment: zkie_core::pcs::whir::Commitment,
+    pub table_opening: zkie_core::pcs::whir::Proof,
+    pub table_eval: Goldilocks,
+    pub alpha: Goldilocks,
+    pub beta: Goldilocks,
+    pub den_leaf: Goldilocks,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2878,6 +2884,7 @@ pub fn prove_committed_shard_dag(
         }
         let mut t_arity: Vec<usize> = Vec::new();
         let mut t_cm: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
+        let mut t_ctable: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
         for tc in &shard.table_columns {
             let total = tc.m.len().next_power_of_two();
             let arity = total.trailing_zeros() as usize;
@@ -2889,6 +2896,8 @@ pub fn prove_committed_shard_dag(
             let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
             t_arity.push(arity);
             t_cm.push(zkie_core::pcs::committed::commit(&bw, &m_pad));
+            let table_pad = pad_table(store.get(tc.table));
+            t_ctable.push(zkie_core::pcs::committed::commit(&bw, &table_pad));
         }
 
         // Phase 2: Fiat-Shamir transcript absorbs the statement and every
@@ -2965,6 +2974,7 @@ pub fn prove_committed_shard_dag(
             let bw = zkie_core::pcs::whir::Whir::with_params(t_arity[i], 90, pow_bits);
             let (open, ev) = bw.open(t_cm[i].prover_data.clone(), &t_cm[i].protocol, &point);
             assert_eq!(ev, num_leaf);
+            let (open_table, ev_table) = bw.open(t_ctable[i].prover_data.clone(), &t_ctable[i].protocol, &point);
             tc.proof = new_proof;
             tc.point = point.clone();
             tc.num_leaf = num_leaf;
@@ -2975,6 +2985,12 @@ pub fn prove_committed_shard_dag(
                 arity: t_arity[i],
                 point,
                 claimed: num_leaf,
+                table_commitment: t_ctable[i].commitment.clone(),
+                table_opening: open_table,
+                table_eval: ev_table,
+                alpha: tc.alpha,
+                beta: tc.beta,
+                den_leaf,
             });
             tc.m.clear();
         }
@@ -3072,6 +3088,17 @@ pub fn verify_committed_shard_dag(
         let bw = zkie_core::pcs::whir::Whir::with_params(to.arity, 90, pow_bits);
         let protocol = bw.opening_protocol(to.arity, 1);
         if bw.verify(&to.commitment, &to.opening, &protocol, &to.point).ok() != Some(to.claimed) {
+            return false;
+        }
+        if bw.verify(&to.table_commitment, &to.table_opening, &protocol, &to.point).ok() != Some(to.table_eval) {
+            return false;
+        }
+        let mut eval_idx = Goldilocks::ZERO;
+        for (k, &pk) in to.point.iter().enumerate() {
+            eval_idx = eval_idx + Goldilocks::from_u64(1u64 << k) * pk;
+        }
+        let expected_den = to.alpha + eval_idx + to.beta * to.table_eval;
+        if expected_den != to.den_leaf {
             return false;
         }
     }
