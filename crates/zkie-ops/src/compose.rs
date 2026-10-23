@@ -2685,8 +2685,16 @@ pub struct WeightBatchOpening {
 }
 
 /// A single lookup witness column pair opened at its chained-GKR leaf point:
-/// commitment roots plus opening proofs, so the verifier authenticates
-/// num_leaf/den_leaf without the plaintext columns.
+/// A multiplicity-column opening for one lookup table side (num_leaf = eval(m, r)).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TableOpening {
+    pub commitment: zkie_core::pcs::whir::Commitment,
+    pub opening: zkie_core::pcs::whir::Proof,
+    pub arity: usize,
+    pub point: Vec<Goldilocks>,
+    pub claimed: Goldilocks,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct WitnessOpening {
     pub commitment_num: zkie_core::pcs::whir::Commitment,
@@ -2711,6 +2719,7 @@ pub struct CommittedShardDagProof {
     pub tokens: Vec<u32>,
     pub argmax_t: Vec<u32>,
     pub witness_openings: Vec<WitnessOpening>,
+    pub table_openings: Vec<TableOpening>,
 }
 
 pub fn prove_committed_shard_dag(
@@ -2848,6 +2857,7 @@ pub fn prove_committed_shard_dag(
     // drop the plaintext columns so the final proof carries only roots + openings.
     let mut shards = plain.shards;
     let mut witness_openings = Vec::new();
+    let mut table_openings = Vec::new();
     for shard in &mut shards {
         for wc in &mut shard.witness_columns {
             let arity = wc.num.len().trailing_zeros() as usize;
@@ -2873,6 +2883,24 @@ pub fn prove_committed_shard_dag(
             wc.den.clear();
         }
         for tc in &mut shard.table_columns {
+            let total = tc.m.len().next_power_of_two();
+            let arity = total.trailing_zeros() as usize;
+            let mut m_pad = vec![Goldilocks::from_u64(0); total];
+            for (j, &v) in tc.m.iter().enumerate() {
+                m_pad[j] = Goldilocks::from_u64(v);
+            }
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
+            let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+            let c = zkie_core::pcs::committed::commit(&bw, &m_pad);
+            let (open, ev) = bw.open(c.prover_data.clone(), &c.protocol, &tc.point);
+            assert_eq!(ev, tc.num_leaf);
+            table_openings.push(TableOpening {
+                commitment: c.commitment,
+                opening: open,
+                arity,
+                point: tc.point.clone(),
+                claimed: tc.num_leaf,
+            });
             tc.m.clear();
         }
     }
@@ -2888,6 +2916,7 @@ pub fn prove_committed_shard_dag(
         tokens: store.idx[tokens_t].clone(),
         argmax_t: store.idx[argmax_t].clone(),
         witness_openings,
+        table_openings,
     }
 }
 
@@ -2960,6 +2989,14 @@ pub fn verify_committed_shard_dag(
             &opening.claimed,
             opening_proof,
         ) {
+            return false;
+        }
+    }
+    for to in &proof.table_openings {
+        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(to.arity, 90);
+        let bw = zkie_core::pcs::whir::Whir::with_params(to.arity, 90, pow_bits);
+        let protocol = bw.opening_protocol(to.arity, 1);
+        if bw.verify(&to.commitment, &to.opening, &protocol, &to.point).ok() != Some(to.claimed) {
             return false;
         }
     }
