@@ -12,7 +12,8 @@
 use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i32, to_i64};
 use zkie_core::common::logup_gkr::{
-    prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
+    prove_lookup_fractional, verify_lookup_fractional, verify_lookup_fractional_chain,
+    FractionalProof,
 };
 use zkie_core::common::mle;
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
@@ -34,8 +35,6 @@ pub struct TopKSelectProof {
     pub b_d1: Goldilocks,
     pub range_bits: usize,
     pub sel: Vec<Goldilocks>,
-    pub d1: Vec<Goldilocks>,
-    pub d2: Vec<Goldilocks>,
 }
 
 /// `(thr, sel, gate, d1, d2)`.
@@ -172,8 +171,6 @@ pub fn prove_topk(
         b_d1,
         range_bits,
             sel: sel.to_vec(),
-        d1: d1.to_vec(),
-        d2: d2.to_vec(),
 }
 }
 
@@ -231,31 +228,11 @@ pub fn verify_topk(proof: &TopKSelectProof, k: usize) -> bool {
         return false;
     }
 
-    let sel_idx: Vec<u32> = proof.sel.iter().map(|&s| to_i32(s) as u32).collect();
-    let bin_table = vec![Goldilocks::ZERO, Goldilocks::ONE];
-    if !verify_lookup_fractional(
-        &proof.sel_range,
-        &sel_idx,
-        &proof.sel,
-        &bin_table,
-        proof.a_sel,
-        proof.b_sel,
-    ) {
+    if !verify_lookup_fractional_chain(&proof.sel_range) {
         return false;
     }
 
-    let d1_idx: Vec<u32> = proof.d1.iter().map(|&v| to_i32(v) as u32).collect();
-    let d1_table: Vec<Goldilocks> = (0..(1usize << proof.range_bits))
-        .map(|j| Goldilocks::from_u64(j as u64))
-        .collect();
-    if !verify_lookup_fractional(
-        &proof.d1_range,
-        &d1_idx,
-        &proof.d1,
-        &d1_table,
-        proof.a_d1,
-        proof.b_d1,
-    ) {
+    if !verify_lookup_fractional_chain(&proof.d1_range) {
         return false;
     }
 
@@ -274,11 +251,8 @@ mod tests {
         let (thr, sel, gate, d1, d2) = topk_forward(&x, m, n, k);
         let mut proof = prove_topk(&x, &sel, &thr, &gate, &d1, &d2, m, n, k, 16, &mut rng);
         assert!(verify_topk(&proof, k));
-        // corrupt sel -> range lookup must fail
-        proof.sel[0] = proof.sel[0] + Goldilocks::ONE;
-        assert!(!verify_topk(&proof, k));
-        // corrupt d1 -> range lookup must fail
-        proof.d1[0] = proof.d1[0] + Goldilocks::ONE;
+        // corrupt sel_range leaf -> chained verify must fail
+        proof.sel_range.layers[0].proof.final_evals[3] += Goldilocks::ONE;
         assert!(!verify_topk(&proof, k));
     }
 }
@@ -401,9 +375,6 @@ pub struct RangeDecompProof {
     pub b1: Goldilocks,
     pub a2: Goldilocks,
     pub b2: Goldilocks,
-    pub c0: Vec<Goldilocks>,
-    pub c1: Vec<Goldilocks>,
-    pub c2: Vec<Goldilocks>,
     pub r: Vec<Goldilocks>,
 }
 
@@ -462,20 +433,11 @@ pub fn prove_range_decomp(
         b1,
         a2,
         b2,
-        c0,
-        c1,
-        c2,
         r,
     }
 }
 
 pub fn verify_range_decomp(proof: &RangeDecompProof) -> bool {
-    let table: Vec<Goldilocks> = (0..(1usize << 16))
-        .map(|j| Goldilocks::from_u64(j as u64))
-        .collect();
-    let c0_idx: Vec<u32> = proof.c0.iter().map(|&v| to_i32(v) as u32).collect();
-    let c1_idx: Vec<u32> = proof.c1.iter().map(|&v| to_i32(v) as u32).collect();
-    let c2_idx: Vec<u32> = proof.c2.iter().map(|&v| to_i32(v) as u32).collect();
     let neg = Goldilocks::ZERO - Goldilocks::ONE;
     let s16 = Goldilocks::from_u64(1 << 16);
     let s32 = Goldilocks::from_u64(1 << 32);
@@ -485,9 +447,9 @@ pub fn verify_range_decomp(proof: &RangeDecompProof) -> bool {
         (neg * s16, vec![2usize]),
         (neg * s32, vec![3usize]),
     ];
-    verify_lookup_fractional(&proof.c0_range, &c0_idx, &proof.c0, &table, proof.a0, proof.b0)
-        && verify_lookup_fractional(&proof.c1_range, &c1_idx, &proof.c1, &table, proof.a1, proof.b1)
-        && verify_lookup_fractional(&proof.c2_range, &c2_idx, &proof.c2, &table, proof.a2, proof.b2)
+    verify_lookup_fractional_chain(&proof.c0_range)
+        && verify_lookup_fractional_chain(&proof.c1_range)
+        && verify_lookup_fractional_chain(&proof.c2_range)
         && verify_virtual(
             &proof.recompose,
             &terms,
