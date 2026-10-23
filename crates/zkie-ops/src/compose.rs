@@ -42,6 +42,13 @@ use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 use zkie_core::common::transcript::Transcript;
 use zkie_core::common::weights_io::WeightMmap;
 
+fn is_identity_table(table: &[Goldilocks]) -> bool {
+    table
+        .iter()
+        .enumerate()
+        .all(|(j, &v)| v == Goldilocks::from_u64(j as u64))
+}
+
 fn transpose(a: &[Goldilocks], m: usize, k: usize) -> Vec<Goldilocks> {
     let mut t = vec![Goldilocks::ZERO; k * m];
     for i in 0..m {
@@ -2644,9 +2651,10 @@ pub struct TableOpening {
     pub arity: usize,
     pub point: Vec<Goldilocks>,
     pub claimed: Goldilocks,
-    pub table_commitment: zkie_core::pcs::whir::Commitment,
-    pub table_opening: zkie_core::pcs::whir::Proof,
+    pub table_commitment: Option<zkie_core::pcs::whir::Commitment>,
+    pub table_opening: Option<zkie_core::pcs::whir::Proof>,
     pub table_eval: Goldilocks,
+    pub is_identity: bool,
     pub alpha: Goldilocks,
     pub beta: Goldilocks,
     pub den_leaf: Goldilocks,
@@ -2859,10 +2867,16 @@ pub fn prove_committed_shard_dag(
         T,
         (usize, zkie_core::pcs::committed::Committed),
     > = std::collections::BTreeMap::new();
+    let mut identity_tables: std::collections::BTreeSet<T> = std::collections::BTreeSet::new();
     for shard in &shards {
         for tc in &shard.table_columns {
-            if !global_table_commits.contains_key(&tc.table) {
-                let table_pad = pad_table(store.get(tc.table));
+            if !global_table_commits.contains_key(&tc.table) && !identity_tables.contains(&tc.table) {
+                let raw_table = store.get(tc.table);
+                if is_identity_table(raw_table) {
+                    identity_tables.insert(tc.table);
+                    continue;
+                }
+                let table_pad = pad_table(raw_table);
                 let arity = table_pad.len().trailing_zeros() as usize;
                 let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
                 let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
@@ -2916,8 +2930,13 @@ pub fn prove_committed_shard_dag(
         }
         for i in 0..t_arity.len() {
             ts.absorb(&bincode::serialize(&t_cm[i].commitment).unwrap());
-            let (_, gc) = &global_table_commits[&shard.table_columns[i].table];
-            ts.absorb(&bincode::serialize(&gc.commitment).unwrap());
+            let tid = shard.table_columns[i].table;
+            if identity_tables.contains(&tid) {
+                ts.absorb_u64(0);
+            } else {
+                let (_, gc) = &global_table_commits[&tid];
+                ts.absorb(&bincode::serialize(&gc.commitment).unwrap());
+            }
         }
         let mut alphas: Vec<Goldilocks> = Vec::new();
         let mut betas: Vec<Goldilocks> = Vec::new();
@@ -2994,14 +3013,20 @@ pub fn prove_committed_shard_dag(
             let bw = zkie_core::pcs::whir::Whir::with_params(t_arity[i], 90, pow_bits);
             let (open, ev) = bw.open(t_cm[i].prover_data.clone(), &t_cm[i].protocol, &point);
             assert_eq!(ev, num_leaf);
-            let (table_arity, table_committed) = &global_table_commits[&tc.table];
-            let table_bw = zkie_core::pcs::whir::Whir::with_params(
-                *table_arity,
-                90,
-                zkie_core::pcs::whir::Whir::required_pow_bits(*table_arity, 90),
-            );
-            let (open_table, ev_table) =
-                table_bw.open(table_committed.prover_data.clone(), &table_committed.protocol, &point);
+            let is_ident = identity_tables.contains(&tc.table);
+            let (table_commitment, table_opening, table_eval) = if is_ident {
+                (None, None, Goldilocks::ZERO)
+            } else {
+                let (table_arity, table_committed) = &global_table_commits[&tc.table];
+                let table_bw = zkie_core::pcs::whir::Whir::with_params(
+                    *table_arity,
+                    90,
+                    zkie_core::pcs::whir::Whir::required_pow_bits(*table_arity, 90),
+                );
+                let (open_table, ev_table) =
+                    table_bw.open(table_committed.prover_data.clone(), &table_committed.protocol, &point);
+                (Some(table_committed.commitment.clone()), Some(open_table), ev_table)
+            };
             tc.proof = new_proof;
             tc.point = point.clone();
             tc.num_leaf = num_leaf;
@@ -3012,9 +3037,10 @@ pub fn prove_committed_shard_dag(
                 arity: t_arity[i],
                 point,
                 claimed: num_leaf,
-                table_commitment: table_committed.commitment.clone(),
-                table_opening: open_table,
-                table_eval: ev_table,
+                table_commitment,
+                table_opening,
+                table_eval,
+                is_identity: is_ident,
                 alpha,
                 beta,
                 den_leaf,
@@ -3236,14 +3262,20 @@ pub fn verify_committed_shard_dag(
         if bw.verify(&to.commitment, &to.opening, &protocol, &to.point).ok() != Some(to.claimed) {
             return false;
         }
-        if bw.verify(&to.table_commitment, &to.table_opening, &protocol, &to.point).ok() != Some(to.table_eval) {
-            return false;
-        }
         let mut eval_idx = Goldilocks::ZERO;
         for (k, &pk) in to.point.iter().enumerate() {
             eval_idx = eval_idx + Goldilocks::from_u64(1u64 << k) * pk;
         }
-        let expected_den = to.alpha + eval_idx + to.beta * to.table_eval;
+        let table_eval = if to.is_identity {
+            eval_idx
+        } else {
+            let (tc, to2) = (&to.table_commitment, &to.table_opening);
+            if bw.verify(tc.as_ref().unwrap(), to2.as_ref().unwrap(), &protocol, &to.point).ok() != Some(to.table_eval) {
+                return false;
+            }
+            to.table_eval
+        };
+        let expected_den = to.alpha + eval_idx + to.beta * table_eval;
         if expected_den != to.den_leaf {
             return false;
         }
@@ -3320,7 +3352,11 @@ pub fn verify_committed_shard_dag(
             for _ in &shard.table_columns {
                 let to = &proof.table_openings[ti];
                 ts.absorb(&bincode::serialize(&to.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&to.table_commitment).unwrap());
+                if to.is_identity {
+                    ts.absorb_u64(0);
+                } else {
+                    ts.absorb(&bincode::serialize(to.table_commitment.as_ref().unwrap()).unwrap());
+                }
                 ti += 1;
             }
             let w_base = wi - shard.witness_columns.len();
