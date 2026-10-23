@@ -691,6 +691,7 @@ pub enum Op {
         cos: T,
         sin: T,
         out: T,
+        range_table: T,
         m: usize,
         d: usize,
         shift: u32,
@@ -973,7 +974,7 @@ impl Op {
             Op::RmsNorm {
                 x, w, rsqrt_table, limb_table, ..
             } => vec![x, w, rsqrt_table, limb_table],
-            Op::RoPE { x, cos, sin, .. } => vec![x, cos, sin],
+            Op::RoPE { x, cos, sin, range_table, .. } => vec![x, cos, sin, range_table],
             Op::TopKSelect { x, .. } => vec![x],
             Op::Argmax { x, .. } => vec![x],
             Op::ScaleGate { x, gate, .. } => vec![x, gate],
@@ -1521,6 +1522,7 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                 cos,
                 sin,
                 out,
+                range_table,
                 m,
                 d,
                 shift,
@@ -1926,11 +1928,12 @@ pub fn prove_shard_precomputed(
                 cos,
                 sin,
                 out,
+                range_table,
                 m,
                 d,
                 shift,
             } => {
-                let p = prove_rope(
+                let (p, rem_f, rem_s) = prove_rope(
                     store.get(x),
                     store.get(cos),
                     store.get(sin),
@@ -1940,6 +1943,16 @@ pub fn prove_shard_precomputed(
                     shift,
                     rng,
                 );
+                let idx_f: Vec<u32> = rem_f.iter().map(|&v| to_i32(v) as u32).collect();
+                let idx_s: Vec<u32> = rem_s.iter().map(|&v| to_i32(v) as u32).collect();
+                lookup_by_table
+                    .entry(range_table)
+                    .or_insert(Vec::new())
+                    .push((idx_f, rem_f));
+                lookup_by_table
+                    .entry(range_table)
+                    .or_insert(Vec::new())
+                    .push((idx_s, rem_s));
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
                 op_proofs.push(OpProof::RoPE(p));
             }

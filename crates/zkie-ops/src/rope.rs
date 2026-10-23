@@ -34,17 +34,9 @@ fn round_div(a: i64, b: i64) -> i64 {
 pub struct RoPEProof {
     pub first: VirtualProof,
     pub second: VirtualProof,
-    pub frac_f: FractionalProof,
-    pub frac_s: FractionalProof,
     pub r_first: Vec<Goldilocks>,
     pub r_second: Vec<Goldilocks>,
     pub r_out: Vec<Goldilocks>,
-    pub alpha_f: Goldilocks,
-    pub beta_f: Goldilocks,
-    pub alpha_s: Goldilocks,
-    pub beta_s: Goldilocks,
-    pub rem_f: Vec<Goldilocks>,
-    pub rem_s: Vec<Goldilocks>,
 }
 
 fn heads_of(x_len: usize, m: usize, d: usize) -> usize {
@@ -143,7 +135,7 @@ pub fn prove_rope(
     d: usize,
     shift: u32,
     rng: &mut impl ChallengeSource,
-) -> RoPEProof {
+) -> (RoPEProof, Vec<Goldilocks>, Vec<Goldilocks>) {
     let heads = heads_of(x.len(), m, d);
     let (_out, rem_f, rem_s) = rope_forward(x, cos, sin, m, d, shift);
     let x_f = extract_first(x, m, d, heads);
@@ -189,35 +181,17 @@ pub fn prove_rope(
         .map(|_| rng.field())
         .collect();
 
-    // range-check the rounding remainders so the rounding is constrained to the
-    // honest round(.. / 2^shift) value (mirrors projection.rs).
-    let table: Vec<Goldilocks> = (0..(1usize << shift))
-        .map(|j| Goldilocks::from_u64(j as u64))
-        .collect();
-    let idx_f: Vec<u32> = rem_f.iter().map(|&v| to_i32(v) as u32).collect();
-    let idx_s: Vec<u32> = rem_s.iter().map(|&v| to_i32(v) as u32).collect();
-    let alpha_f = rng.field();
-    let beta_f = rng.field();
-    let frac_f = prove_lookup_fractional(&idx_f, &rem_f, &table, alpha_f, beta_f, rng);
-    let alpha_s = rng.field();
-    let beta_s = rng.field();
-    let frac_s = prove_lookup_fractional(&idx_s, &rem_s, &table, alpha_s, beta_s, rng);
-
-    RoPEProof {
-        first,
-        second,
-        frac_f,
-        frac_s,
-        r_first: r_f,
-        r_second: r_s,
-        r_out,
-        alpha_f,
-        beta_f,
-        alpha_s,
-        beta_s,
+    (
+        RoPEProof {
+            first,
+            second,
+            r_first: r_f,
+            r_second: r_s,
+            r_out,
+        },
         rem_f,
         rem_s,
-    }
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -260,26 +234,7 @@ pub fn verify_rope(proof: &RoPEProof, shift: u32) -> bool {
         return false;
     }
 
-    let table: Vec<Goldilocks> = (0..(1usize << shift))
-        .map(|j| Goldilocks::from_u64(j as u64))
-        .collect();
-    let idx_f: Vec<u32> = proof.rem_f.iter().map(|&v| to_i32(v) as u32).collect();
-    let idx_s: Vec<u32> = proof.rem_s.iter().map(|&v| to_i32(v) as u32).collect();
-    verify_lookup_fractional(
-        &proof.frac_f,
-        &idx_f,
-        &proof.rem_f,
-        &table,
-        proof.alpha_f,
-        proof.beta_f,
-    ) && verify_lookup_fractional(
-        &proof.frac_s,
-        &idx_s,
-        &proof.rem_s,
-        &table,
-        proof.alpha_s,
-        proof.beta_s,
-    )
+    true
 }
 
 #[cfg(test)]
@@ -300,7 +255,7 @@ mod tests {
         let cos: Vec<Goldilocks> = (0..m * half).map(|_| from_i64(65536)).collect();
         let sin: Vec<Goldilocks> = (0..m * half).map(|_| from_i64(0)).collect();
         let (out, _rf, _rs) = rope_forward(&x, &cos, &sin, m, d, shift);
-        let proof = prove_rope(&x, &cos, &sin, &out, m, d, shift, &mut rng);
+        let (proof, _rem_f, _rem_s) = prove_rope(&x, &cos, &sin, &out, m, d, shift, &mut rng);
         assert!(verify_rope(&proof, shift));
         assert_eq!(out.len(), m * heads * d);
     }

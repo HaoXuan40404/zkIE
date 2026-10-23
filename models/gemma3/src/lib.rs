@@ -153,6 +153,7 @@ fn build_layer(
         out: k_rot,
         m,
         d: HDIM,
+        range_table: limb_t,
         shift,
     });
     let kt = store.push(vec![]);
@@ -218,6 +219,7 @@ fn build_layer(
             out: q_rot,
             m,
             d: HDIM,
+            range_table: limb_t,
             shift,
         });
         ops.push(Op::Scale {

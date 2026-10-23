@@ -135,6 +135,7 @@ fn build_attention(
         out: kpe_rot,
         m,
         d: QK_ROPE,
+        range_table: limb_t,
         shift,
     });
     let kt = store.push(vec![]);
@@ -232,6 +233,7 @@ fn build_attention(
             out: qp_rot,
             m,
             d: QK_ROPE,
+            range_table: limb_t,
             shift,
         });
         let knt = store.push(vec![]);
