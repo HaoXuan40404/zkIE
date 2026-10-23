@@ -485,5 +485,5 @@ wired for DeepSeek, matching the pre-existing 510/512 reference).
 | model | seq | shards | prove | verify | argmax | peak RSS |
 | --- | --- | --- | --- | --- | --- | --- |
 | DeepSeek-V2-Lite | 16 | 12 | 322.8 s | 55.6 s | 16/16 | ~141 GB |
-| DeepSeek-V2-Lite | 512 | 12 | 5575 s | - | 510/512 | ~199 GB |
+| DeepSeek-V2-Lite | 512 | 12 | 5602 s | 72.7 s | 510/512 | ~209 GB |
 
