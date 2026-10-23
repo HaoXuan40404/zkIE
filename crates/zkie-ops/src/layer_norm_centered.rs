@@ -27,7 +27,6 @@ pub struct LayerNormCenteredProof {
     pub mean: VirtualProof,
     pub centered: VirtualProof,
     pub var: VirtualProof,
-    pub rstd: FractionalProof,
     pub out: VirtualProof,
     pub r_mean: Vec<Goldilocks>,
     pub mean_ch: Vec<Goldilocks>,
@@ -35,10 +34,6 @@ pub struct LayerNormCenteredProof {
     pub r_var: Vec<Goldilocks>,
     pub var_ch: Vec<Goldilocks>,
     pub r_out: Vec<Goldilocks>,
-    pub alpha: Goldilocks,
-    pub beta: Goldilocks,
-    pub s_index: Vec<u32>,
-    pub rstd_vals: Vec<Goldilocks>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -133,7 +128,7 @@ pub fn prove_layer_norm_centered(
     d: usize,
     n_real: usize,
     rng: &mut impl ChallengeSource,
-) -> LayerNormCenteredProof {
+) -> (LayerNormCenteredProof, Vec<u32>, Vec<Goldilocks>) {
     let (mean, centered, var, s_index, rstd, out, rem_out, sum_mean, rem_mean, sum_var, rem_var) =
         layer_norm_forward(x, w, b, rsqrt_table, m, d, n_real);
     let d_f = Goldilocks::from_u64(n_real as u64);
@@ -219,11 +214,6 @@ pub fn prove_layer_norm_centered(
         &v_ch,
     );
 
-    // rstd lookup.
-    let alpha = rng.field();
-    let beta = rng.field();
-    let rstd_proof = prove_lookup_fractional(&s_index, &rstd, rsqrt_table, alpha, beta, rng);
-
     // out: raw = centered*rstd*w ; raw = (out-b)*2^32 + rem_out.
     let rstd_b: Vec<Goldilocks> = (0..m * d).map(|ij| rstd[ij / d]).collect();
     let raw: Vec<Goldilocks> = (0..m * d)
@@ -249,29 +239,27 @@ pub fn prove_layer_norm_centered(
         &r_out,
     );
 
-    LayerNormCenteredProof {
-        mean: mean_proof,
-        centered: centered_proof,
-        var: var_proof,
-        rstd: rstd_proof,
-        out: out_proof,
-        r_mean,
-        mean_ch: m_ch,
-        centered_r,
-        r_var,
-        var_ch: v_ch,
-        r_out,
-        alpha,
-        beta,
-            s_index,
-        rstd_vals: rstd,
-}
+    (
+        LayerNormCenteredProof {
+            mean: mean_proof,
+            centered: centered_proof,
+            var: var_proof,
+            out: out_proof,
+            r_mean,
+            mean_ch: m_ch,
+            centered_r,
+            r_var,
+            var_ch: v_ch,
+            r_out,
+        },
+        s_index,
+        rstd,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn verify_layer_norm_centered(
     proof: &LayerNormCenteredProof,
-    rsqrt_table: &[Goldilocks],
     n_real: usize,
 ) -> bool {
     let d_f = Goldilocks::from_u64(n_real as u64);
@@ -324,17 +312,6 @@ pub fn verify_layer_norm_centered(
         return false;
     }
 
-    if !verify_lookup_fractional(
-        &proof.rstd,
-        &proof.s_index,
-        &proof.rstd_vals,
-        rsqrt_table,
-        proof.alpha,
-        proof.beta,
-    ) {
-        return false;
-    }
-
     verify_virtual(
         &proof.out,
         &[
@@ -373,7 +350,7 @@ mod tests {
         let rsqrt_table: Vec<Goldilocks> = (0..(1usize << 20))
             .map(|j| from_i64((j % 1000 + 1) as i64))
             .collect();
-        let proof = prove_layer_norm_centered(&x, &w, &b, &rsqrt_table, m, d, d, &mut rng);
-        assert!(verify_layer_norm_centered(&proof, &rsqrt_table, d));
+        let (proof, _ridx, _rvals) = prove_layer_norm_centered(&x, &w, &b, &rsqrt_table, m, d, d, &mut rng);
+        assert!(verify_layer_norm_centered(&proof, d));
     }
 }

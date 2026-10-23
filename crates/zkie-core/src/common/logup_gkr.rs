@@ -346,7 +346,8 @@ pub fn prove_lookup_witness_batch_columns(
 ) -> (FractionalProof, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>) {
     assert_eq!(xs.len(), ys.len());
     let n: usize = xs.iter().map(|x| x.len()).sum();
-    let total = n.next_power_of_two();
+    // WHIR folding factor 5 needs arity >= 5; pad tiny witnesses to 2^5.
+    let total = n.next_power_of_two().max(32);
     let mut num = vec![Goldilocks::from_u64(0); total];
     let mut x_flat = vec![Goldilocks::from_u64(0); total];
     let mut y_flat = vec![Goldilocks::from_u64(0); total];

@@ -1859,7 +1859,7 @@ pub fn prove_shard_precomputed(
                 d,
                 n_real,
             } => {
-                let p = prove_layer_norm_centered(
+                let (p, ridx, rvals) = prove_layer_norm_centered(
                     store.get(x),
                     store.get(w),
                     store.get(b),
@@ -1869,6 +1869,10 @@ pub fn prove_shard_precomputed(
                     n_real,
                     rng,
                 );
+                lookup_by_table
+                    .entry(rsqrt_table)
+                    .or_insert(Vec::new())
+                    .push((ridx, rvals));
                 claims.push((
                     x,
                     p.centered_r.clone(),
@@ -2174,10 +2178,10 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                 }
             }
             (
-                Op::LayerNormCentered { rsqrt_table, n_real, .. },
+                Op::LayerNormCentered { n_real, .. },
                 OpProof::LayerNormCentered(lp),
             ) => {
-                if !verify_layer_norm_centered(lp, tables[*rsqrt_table], *n_real) {
+                if !verify_layer_norm_centered(lp, *n_real) {
                     return false;
                 }
             }
