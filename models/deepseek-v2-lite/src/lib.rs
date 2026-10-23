@@ -8,7 +8,7 @@
 use std::fs;
 
 use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing};
-use zkie_core::common::fixed_point::{from_i32, to_i32};
+use zkie_core::common::fixed_point::{from_i32, from_i64, to_i32};
 use zkie_ops::compose::{causal_mask, Op, Store};
 
 pub const H: usize = 2048;
@@ -688,26 +688,19 @@ pub fn build_deepseek(
         k: H,
         n: VOCAB_PAD,
     });
-    let logits_scaled = store.push(vec![]);
-    ops.push(Op::Scale {
-        x: logits,
-        out: logits_scaled,
-        factor: 1,
-        shift: 13,
-    });
     let mask: Vec<Goldilocks> = (0..VOCAB_PAD)
         .map(|j| {
             if j < VOCAB {
                 from_i32(0)
             } else {
-                from_i32(-(1 << 26))
+                from_i64(-(1i64 << 41))
             }
         })
         .collect();
     let mask_t = store.push(broadcast(&mask, m));
     let logits_masked = store.push(vec![]);
     ops.push(Op::Add {
-        a: logits_scaled,
+        a: logits,
         b: mask_t,
         c: logits_masked,
     });

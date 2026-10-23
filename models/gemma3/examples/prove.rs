@@ -24,7 +24,7 @@ fn main() {
     let dir = "models/gemma3/weights";
     let mut store = Store::new();
     let mut ops = Vec::new();
-    let (_x0, logits) = build_gemma3(&mut store, &mut ops, dir, m, 16);
+    let (_x0, logits, _tokens, _t) = build_gemma3(&mut store, &mut ops, dir, m, 16);
 
     let mut rng = XorShift64::new(0xC0FFEE);
     let t0 = std::time::Instant::now();

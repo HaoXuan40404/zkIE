@@ -426,11 +426,11 @@ pub fn build_gemma3(
     let emb_idx: Vec<u32> = (0..m)
         .flat_map(|i| {
             let ti = to_i32(tokens_raw[i]) as u32;
-            (0..H_PAD).map(move |d| (d * VOCAB) as u32 + ti)
+            (0..H_PAD).map(move |d| ((ti as usize) * H_PAD + d) as u32)
         })
         .collect();
     let emb_idx_t = store.push_idx(emb_idx);
-    let wte_owned = store.push(load_i32(&format!("{dir}/lm_head_i32.bin")));
+    let wte_owned = store.push(load_i32(&format!("{dir}/embed_tokens_i32.bin")));
     let token_emb = store.push(vec![]);
     ops.push(Op::Lookup {
         idx: emb_idx_t,
@@ -488,13 +488,6 @@ pub fn build_gemma3(
     });
     // Bound the logits for the argmax range check (VOCAB is 2^18, so no padding
     // mask is needed). The exact shift/range_bits follow the GPT-2 calibration.
-    let logits_scaled = store.push(vec![]);
-    ops.push(Op::Scale {
-        x: logits,
-        out: logits_scaled,
-        factor: 1,
-        shift: 13,
-    });
     let arg_sel = store.push(vec![]);
     let arg_thr = store.push(vec![]);
     let arg_gate = store.push(vec![]);
@@ -502,7 +495,7 @@ pub fn build_gemma3(
     let arg_d2 = store.push(vec![]);
     let t = store.push_idx(vec![]);
     ops.push(Op::Argmax {
-        x: logits_scaled,
+        x: logits,
         sel: arg_sel,
         thr: arg_thr,
         gate: arg_gate,
