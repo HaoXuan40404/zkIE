@@ -115,7 +115,10 @@ pub fn verify_fractional(
 // inter-layer MLE folding relation so next_num_{k-1}(r[k..]) agrees with the
 // low/high evals of num_k at r[k+1..]. Leaf authentication (opening num_0/den_0
 // at the full challenge point) restores soundness in P2/P3.
-pub fn verify_fractional_chain(proof: &FractionalProof, claimed: Goldilocks) -> bool {
+// Core chained-GKR check: per-layer sumcheck self-consistency + inter-layer
+// MLE folding. Does not check the final_num/final_den == claimed relation, so
+// split lookup/table proofs can share it and enforce the link separately.
+pub fn verify_fractional_chain_core(proof: &FractionalProof) -> bool {
     let one = Goldilocks::from_u64(1);
     for layer in &proof.layers {
         let terms = build_terms(layer.c);
@@ -142,7 +145,11 @@ pub fn verify_fractional_chain(proof: &FractionalProof, claimed: Goldilocks) -> 
             return false;
         }
     }
-    proof.final_num == claimed * proof.final_den
+    true
+}
+
+pub fn verify_fractional_chain(proof: &FractionalProof, claimed: Goldilocks) -> bool {
+    verify_fractional_chain_core(proof) && proof.final_num == claimed * proof.final_den
 }
 
 // Store-free verify: use the final_evals already stored in each layer
@@ -210,6 +217,82 @@ pub fn build_lookup_num_den(
         den[n + j] = alpha + Goldilocks::from_u64(j as u64) + beta * table[j];
     }
     (num, den)
+}
+
+// Split lookup into a witness side (x/y) and a table side (table/multiplicity),
+// matching DeepProve: the table side is committed once globally (small PoW),
+// while the witness side is committed per lookup. The two sides are linked by
+// the LogUp identity: sum_i 1/(alpha+x_i+beta*y_i) == sum_j m_j/(alpha+j+beta*table_j).
+pub fn lookup_multiplicity(x: &[u32], t: usize) -> Vec<u64> {
+    let mut m = vec![0u64; t];
+    for &i in x {
+        m[i as usize] += 1;
+    }
+    m
+}
+
+pub fn build_lookup_witness_num_den(
+    x: &[u32],
+    y: &[Goldilocks],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+) -> (Vec<Goldilocks>, Vec<Goldilocks>) {
+    let n = x.len();
+    let total = n.next_power_of_two();
+    let mut num = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![Goldilocks::from_u64(1); total];
+    for i in 0..n {
+        num[i] = Goldilocks::from_u64(1);
+        den[i] = alpha + Goldilocks::from_u64(x[i] as u64) + beta * y[i];
+    }
+    (num, den)
+}
+
+pub fn build_lookup_table_num_den(
+    m: &[u64],
+    table: &[Goldilocks],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+) -> (Vec<Goldilocks>, Vec<Goldilocks>) {
+    let t = table.len();
+    let total = t.next_power_of_two();
+    let mut num = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![Goldilocks::from_u64(1); total];
+    for j in 0..t {
+        num[j] = Goldilocks::from_u64(m[j]);
+        den[j] = alpha + Goldilocks::from_u64(j as u64) + beta * table[j];
+    }
+    (num, den)
+}
+
+pub fn prove_lookup_witness(
+    x: &[u32],
+    y: &[Goldilocks],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+    rng: &mut impl ChallengeSource,
+) -> FractionalProof {
+    let (num, den) = build_lookup_witness_num_den(x, y, alpha, beta);
+    prove_fractional(num, den, rng)
+}
+
+pub fn prove_lookup_table(
+    m: &[u64],
+    table: &[Goldilocks],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+    rng: &mut impl ChallengeSource,
+) -> FractionalProof {
+    let (num, den) = build_lookup_table_num_den(m, table, alpha, beta);
+    prove_fractional(num, den, rng)
+}
+
+// Verify the split lookup: each side is chained-GKR sound, and the two sides
+// agree on the fractional sum (cross-multiplied LogUp identity).
+pub fn verify_lookup_split(witness: &FractionalProof, table: &FractionalProof) -> bool {
+    verify_fractional_chain_core(witness)
+        && verify_fractional_chain_core(table)
+        && witness.final_num * table.final_den == table.final_num * witness.final_den
 }
 
 pub fn prove_lookup_fractional(
@@ -499,6 +582,23 @@ mod tests {
         assert!(verify_lookup_fractional_chain(&proof));
         proof.layers[0].proof.final_evals[3] += Goldilocks::from_u64(1);
         assert!(!verify_lookup_fractional_chain(&proof));
+    }
+    #[test]
+    fn lookup_split_matches_merged() {
+        let mut rng = XorShift64::new(0x5E17);
+        let n = 64usize;
+        let t = 16usize;
+        let table: Vec<Goldilocks> = (0..t).map(|_| rng.field()).collect();
+        let x: Vec<u32> = (0..n).map(|_| (rng.next_u64() % t as u64) as u32).collect();
+        let y: Vec<Goldilocks> = x.iter().map(|&i| table[i as usize]).collect();
+        let alpha = rng.field();
+        let beta = rng.field();
+        let merged = prove_lookup_fractional(&x, &y, &table, alpha, beta, &mut rng);
+        assert!(verify_lookup_fractional(&merged, &x, &y, &table, alpha, beta));
+        let m = lookup_multiplicity(&x, t);
+        let witness = prove_lookup_witness(&x, &y, alpha, beta, &mut rng);
+        let table_proof = prove_lookup_table(&m, &table, alpha, beta, &mut rng);
+        assert!(verify_lookup_split(&witness, &table_proof));
     }
     #[test]
     fn committed_lookup_roundtrip() {
