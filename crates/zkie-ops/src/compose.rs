@@ -2642,6 +2642,21 @@ pub struct WeightBatchOpening {
     pub proof: Option<zkie_core::pcs::batch_open::BatchOpeningProof>,
 }
 
+/// A single lookup witness column pair opened at its chained-GKR leaf point:
+/// commitment roots plus opening proofs, so the verifier authenticates
+/// num_leaf/den_leaf without the plaintext columns.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct WitnessOpening {
+    pub commitment_num: zkie_core::pcs::whir::Commitment,
+    pub commitment_den: zkie_core::pcs::whir::Commitment,
+    pub opening_num: zkie_core::pcs::whir::Proof,
+    pub opening_den: zkie_core::pcs::whir::Proof,
+    pub arity: usize,
+    pub point: Vec<Goldilocks>,
+    pub num_leaf: Goldilocks,
+    pub den_leaf: Goldilocks,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CommittedShardDagProof {
     pub shards: Vec<OpShardProof>,
@@ -2653,6 +2668,7 @@ pub struct CommittedShardDagProof {
     pub weight_locs: std::collections::BTreeMap<T, (usize, usize)>,
     pub tokens: Vec<u32>,
     pub argmax_t: Vec<u32>,
+    pub witness_openings: Vec<WitnessOpening>,
 }
 
 pub fn prove_committed_shard_dag(
@@ -2786,8 +2802,37 @@ pub fn prove_committed_shard_dag(
         });
     }
 
+    // Commit + open each lookup witness column pair at its leaf point, then
+    // drop the plaintext columns so the final proof carries only roots + openings.
+    let mut shards = plain.shards;
+    let mut witness_openings = Vec::new();
+    for shard in &mut shards {
+        for wc in &shard.witness_columns {
+            let arity = wc.num.len().trailing_zeros() as usize;
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
+            let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+            let c_num = zkie_core::pcs::committed::commit(&bw, &wc.num);
+            let c_den = zkie_core::pcs::committed::commit(&bw, &wc.den);
+            let (open_num, ev_num) = bw.open(c_num.prover_data.clone(), &c_num.protocol, &wc.point);
+            let (open_den, ev_den) = bw.open(c_den.prover_data.clone(), &c_den.protocol, &wc.point);
+            assert_eq!(ev_num, wc.num_leaf);
+            assert_eq!(ev_den, wc.den_leaf);
+            witness_openings.push(WitnessOpening {
+                commitment_num: c_num.commitment,
+                commitment_den: c_den.commitment,
+                opening_num: open_num,
+                opening_den: open_den,
+                arity,
+                point: wc.point.clone(),
+                num_leaf: wc.num_leaf,
+                den_leaf: wc.den_leaf,
+            });
+        }
+        shard.witness_columns.clear();
+    }
+
     CommittedShardDagProof {
-        shards: plain.shards,
+        shards,
         boundary_tensors,
         boundary_commitments,
         cross_binds,
@@ -2796,6 +2841,7 @@ pub fn prove_committed_shard_dag(
         weight_locs,
         tokens: store.idx[tokens_t].clone(),
         argmax_t: store.idx[argmax_t].clone(),
+        witness_openings,
     }
 }
 
@@ -2868,6 +2914,17 @@ pub fn verify_committed_shard_dag(
             &opening.claimed,
             opening_proof,
         ) {
+            return false;
+        }
+    }
+    for wo in &proof.witness_openings {
+        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(wo.arity, 90);
+        let bw = zkie_core::pcs::whir::Whir::with_params(wo.arity, 90, pow_bits);
+        let protocol = bw.opening_protocol(wo.arity, 1);
+        if bw.verify(&wo.commitment_num, &wo.opening_num, &protocol, &wo.point).ok() != Some(wo.num_leaf) {
+            return false;
+        }
+        if bw.verify(&wo.commitment_den, &wo.opening_den, &protocol, &wo.point).ok() != Some(wo.den_leaf) {
             return false;
         }
     }
