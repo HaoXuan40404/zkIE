@@ -30,7 +30,8 @@ use zkie_core::common::fixed_point::{from_i64, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, prove_lookup_fractional_batch, prove_lookup_fractional_columns,
     verify_lookup_fractional, verify_lookup_fractional_batch, verify_lookup_fractional_chain,
-    fractional_leaf, merge_multiplicity, prove_lookup_table, prove_lookup_witness_batch_columns,
+    build_lookup_table_num_den, fractional_leaf, merge_multiplicity,
+    prove_fractional_with_challenges, prove_lookup_table, prove_lookup_witness_batch_columns,
     verify_lookup_split, FractionalProof,
 };
 use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, MatmulProof};
@@ -908,6 +909,8 @@ pub struct TableColumn {
     pub proof: FractionalProof,
     pub table: T,
     pub m: Vec<u64>,
+    pub alpha: Goldilocks,
+    pub beta: Goldilocks,
     pub point: Vec<Goldilocks>,
     pub num_leaf: Goldilocks,
     pub den_leaf: Goldilocks,
@@ -2062,6 +2065,8 @@ pub fn prove_shard_precomputed(
             proof: table_proof,
             table: *table,
             m,
+            alpha,
+            beta,
             point: point_t,
             num_leaf: num_leaf_t,
             den_leaf: den_leaf_t,
@@ -2858,31 +2863,22 @@ pub fn prove_committed_shard_dag(
     let mut shards = plain.shards;
     let mut witness_openings = Vec::new();
     let mut table_openings = Vec::new();
-    for shard in &mut shards {
-        for wc in &mut shard.witness_columns {
+    for (si, shard) in shards.iter_mut().enumerate() {
+        // Phase 1: commit witness num/den and table multiplicity (keep prover data).
+        let mut w_arity: Vec<usize> = Vec::new();
+        let mut w_cnum: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
+        let mut w_cden: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
+        for wc in &shard.witness_columns {
             let arity = wc.num.len().trailing_zeros() as usize;
             let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
             let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
-            let c_num = zkie_core::pcs::committed::commit(&bw, &wc.num);
-            let c_den = zkie_core::pcs::committed::commit(&bw, &wc.den);
-            let (open_num, ev_num) = bw.open(c_num.prover_data.clone(), &c_num.protocol, &wc.point);
-            let (open_den, ev_den) = bw.open(c_den.prover_data.clone(), &c_den.protocol, &wc.point);
-            assert_eq!(ev_num, wc.num_leaf);
-            assert_eq!(ev_den, wc.den_leaf);
-            witness_openings.push(WitnessOpening {
-                commitment_num: c_num.commitment,
-                commitment_den: c_den.commitment,
-                opening_num: open_num,
-                opening_den: open_den,
-                arity,
-                point: wc.point.clone(),
-                num_leaf: wc.num_leaf,
-                den_leaf: wc.den_leaf,
-            });
-            wc.num.clear();
-            wc.den.clear();
+            w_arity.push(arity);
+            w_cnum.push(zkie_core::pcs::committed::commit(&bw, &wc.num));
+            w_cden.push(zkie_core::pcs::committed::commit(&bw, &wc.den));
         }
-        for tc in &mut shard.table_columns {
+        let mut t_arity: Vec<usize> = Vec::new();
+        let mut t_cm: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
+        for tc in &shard.table_columns {
             let total = tc.m.len().next_power_of_two();
             let arity = total.trailing_zeros() as usize;
             let mut m_pad = vec![Goldilocks::from_u64(0); total];
@@ -2891,15 +2887,94 @@ pub fn prove_committed_shard_dag(
             }
             let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
             let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
-            let c = zkie_core::pcs::committed::commit(&bw, &m_pad);
-            let (open, ev) = bw.open(c.prover_data.clone(), &c.protocol, &tc.point);
-            assert_eq!(ev, tc.num_leaf);
+            t_arity.push(arity);
+            t_cm.push(zkie_core::pcs::committed::commit(&bw, &m_pad));
+        }
+
+        // Phase 2: Fiat-Shamir transcript absorbs the statement and every
+        // commitment root, then derives the fractional challenges in order.
+        let mut ts = Transcript::new(b"zkie-committed-frac-v1");
+        absorb_statement(&mut ts, ops, ops_per_shard);
+        ts.absorb_u64(si as u64);
+        for (cn, cd) in w_cnum.iter().zip(w_cden.iter()) {
+            ts.absorb(&bincode::serialize(&cn.commitment).unwrap());
+            ts.absorb(&bincode::serialize(&cd.commitment).unwrap());
+        }
+        for cm in &t_cm {
+            ts.absorb(&bincode::serialize(&cm.commitment).unwrap());
+        }
+        let mut w_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
+        for &a in &w_arity {
+            w_challs.push((ts.field_vec(a), ts.field_vec(a)));
+        }
+        let mut t_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
+        for &a in &t_arity {
+            t_challs.push((ts.field_vec(a), ts.field_vec(a)));
+        }
+
+        // Phase 3: re-run the chained GKR with the derived challenges and open
+        // each column at the new leaf point.
+        for (i, wc) in shard.witness_columns.iter_mut().enumerate() {
+            let (full_r, cs) = &w_challs[i];
+            let num = std::mem::take(&mut wc.num);
+            let den = std::mem::take(&mut wc.den);
+            let new_proof = prove_fractional_with_challenges(num, den, full_r, cs);
+            let (point, num_leaf, den_leaf) = fractional_leaf(&new_proof);
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(w_arity[i], 90);
+            let bw = zkie_core::pcs::whir::Whir::with_params(w_arity[i], 90, pow_bits);
+            let (open_num, ev_num) = bw.open(
+                w_cnum[i].prover_data.clone(),
+                &w_cnum[i].protocol,
+                &point,
+            );
+            let (open_den, ev_den) = bw.open(
+                w_cden[i].prover_data.clone(),
+                &w_cden[i].protocol,
+                &point,
+            );
+            assert_eq!(ev_num, num_leaf);
+            assert_eq!(ev_den, den_leaf);
+            wc.proof = new_proof;
+            wc.point = point.clone();
+            wc.num_leaf = num_leaf;
+            wc.den_leaf = den_leaf;
+            witness_openings.push(WitnessOpening {
+                commitment_num: w_cnum[i].commitment.clone(),
+                commitment_den: w_cden[i].commitment.clone(),
+                opening_num: open_num,
+                opening_den: open_den,
+                arity: w_arity[i],
+                point,
+                num_leaf,
+                den_leaf,
+            });
+            wc.num.clear();
+            wc.den.clear();
+        }
+        for (i, tc) in shard.table_columns.iter_mut().enumerate() {
+            let (full_r, cs) = &t_challs[i];
+            let (num_t, den_t) = build_lookup_table_num_den(
+                &tc.m,
+                store.get(tc.table),
+                tc.alpha,
+                tc.beta,
+            );
+            let new_proof = prove_fractional_with_challenges(num_t, den_t, full_r, cs);
+            let (point, num_leaf, den_leaf) = fractional_leaf(&new_proof);
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(t_arity[i], 90);
+            let bw = zkie_core::pcs::whir::Whir::with_params(t_arity[i], 90, pow_bits);
+            let (open, ev) = bw.open(t_cm[i].prover_data.clone(), &t_cm[i].protocol, &point);
+            assert_eq!(ev, num_leaf);
+            tc.proof = new_proof;
+            tc.point = point.clone();
+            tc.num_leaf = num_leaf;
+            tc.den_leaf = den_leaf;
             table_openings.push(TableOpening {
-                commitment: c.commitment,
+                commitment: t_cm[i].commitment.clone(),
                 opening: open,
-                arity,
-                point: tc.point.clone(),
-                claimed: tc.num_leaf,
+                arity: t_arity[i],
+                point,
+                claimed: num_leaf,
             });
             tc.m.clear();
         }
@@ -3009,6 +3084,54 @@ pub fn verify_committed_shard_dag(
         }
         if bw.verify(&wo.commitment_den, &wo.opening_den, &protocol, &wo.point).ok() != Some(wo.den_leaf) {
             return false;
+        }
+    }
+
+    // Fiat-Shamir: reconstruct the transcript from the commitment roots and
+    // verify every fractional proof used the derived challenges (full_r and
+    // per-layer c), so the prover cannot pick favourable evaluation points.
+    {
+        let mut wi = 0usize;
+        let mut ti = 0usize;
+        for (si, shard) in proof.shards.iter().enumerate() {
+            let mut ts = Transcript::new(b"zkie-committed-frac-v1");
+            absorb_statement(&mut ts, ops, ops_per_shard);
+            ts.absorb_u64(si as u64);
+            for _ in &shard.witness_columns {
+                let wo = &proof.witness_openings[wi];
+                ts.absorb(&bincode::serialize(&wo.commitment_num).unwrap());
+                ts.absorb(&bincode::serialize(&wo.commitment_den).unwrap());
+                wi += 1;
+            }
+            for _ in &shard.table_columns {
+                let to = &proof.table_openings[ti];
+                ts.absorb(&bincode::serialize(&to.commitment).unwrap());
+                ti += 1;
+            }
+            for wc in &shard.witness_columns {
+                let full_r = ts.field_vec(wc.proof.full_r.len());
+                let cs = ts.field_vec(wc.proof.full_r.len());
+                if wc.proof.full_r != full_r || wc.proof.layers.len() != cs.len() {
+                    return false;
+                }
+                for (layer, &c) in wc.proof.layers.iter().zip(cs.iter()) {
+                    if layer.c != c {
+                        return false;
+                    }
+                }
+            }
+            for tc in &shard.table_columns {
+                let full_r = ts.field_vec(tc.proof.full_r.len());
+                let cs = ts.field_vec(tc.proof.full_r.len());
+                if tc.proof.full_r != full_r || tc.proof.layers.len() != cs.len() {
+                    return false;
+                }
+                for (layer, &c) in tc.proof.layers.iter().zip(cs.iter()) {
+                    if layer.c != c {
+                        return false;
+                    }
+                }
+            }
         }
     }
     true
