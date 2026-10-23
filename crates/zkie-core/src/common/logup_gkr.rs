@@ -182,15 +182,16 @@ pub fn fractional_leaf(proof: &FractionalProof) -> (Vec<Goldilocks>, Goldilocks,
 /// `sum_i 1/(alpha+x_i+beta*y_i) = sum_j m_j/(alpha+j+beta*table[j])`, encoded as
 /// a combined fraction list whose sum is 0 and proven with `prove_fractional`.
 /// This replaces the standalone grand-product form (`prove_product`).
-pub fn prove_lookup_fractional(
+// Build the merged LogUp columns num_0/den_0 from the lookup witness x/y and
+// the table. These are the only columns the chained GKR must commit and open
+// (equivalent to committing x/y + table/multiplicity).
+pub fn build_lookup_num_den(
     x: &[u32],
     y: &[Goldilocks],
     table: &[Goldilocks],
     alpha: Goldilocks,
     beta: Goldilocks,
-    rng: &mut impl ChallengeSource,
-) -> FractionalProof {
-    assert_eq!(x.len(), y.len());
+) -> (Vec<Goldilocks>, Vec<Goldilocks>) {
     let n = x.len();
     let t = table.len();
     let total = (n + t).next_power_of_two();
@@ -208,7 +209,36 @@ pub fn prove_lookup_fractional(
         num[n + j] = from_i64(-(m[j] as i64));
         den[n + j] = alpha + Goldilocks::from_u64(j as u64) + beta * table[j];
     }
+    (num, den)
+}
+
+pub fn prove_lookup_fractional(
+    x: &[u32],
+    y: &[Goldilocks],
+    table: &[Goldilocks],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+    rng: &mut impl ChallengeSource,
+) -> FractionalProof {
+    assert_eq!(x.len(), y.len());
+    let (num, den) = build_lookup_num_den(x, y, table, alpha, beta);
     prove_fractional(num, den, rng)
+}
+
+// Prove a lookup and also return the merged num_0/den_0 columns, so the
+// committed path can batch-commit them and open at the leaf point.
+pub fn prove_lookup_fractional_columns(
+    x: &[u32],
+    y: &[Goldilocks],
+    table: &[Goldilocks],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+    rng: &mut impl ChallengeSource,
+) -> (FractionalProof, Vec<Goldilocks>, Vec<Goldilocks>) {
+    assert_eq!(x.len(), y.len());
+    let (num, den) = build_lookup_num_den(x, y, table, alpha, beta);
+    let proof = prove_fractional(num.clone(), den.clone(), rng);
+    (proof, num, den)
 }
 pub fn verify_lookup_fractional(
     proof: &FractionalProof,
