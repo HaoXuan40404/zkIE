@@ -26,15 +26,17 @@ fn build_terms(c: Goldilocks) -> Vec<(Goldilocks, Vec<usize>)> {
         (neg * c, vec![0, 5, 6]),
     ]
 }
-pub fn prove_fractional(
+pub fn prove_fractional_with_challenges(
     mut num: Vec<Goldilocks>,
     mut den: Vec<Goldilocks>,
-    rng: &mut impl ChallengeSource,
+    full_r: &[Goldilocks],
+    cs: &[Goldilocks],
 ) -> FractionalProof {
     assert_eq!(num.len(), den.len());
     assert!(num.len().is_power_of_two());
     let total_vars = num.len().trailing_zeros() as usize;
-    let full_r: Vec<Goldilocks> = (0..total_vars).map(|_| rng.field()).collect();
+    assert_eq!(full_r.len(), total_vars);
+    assert_eq!(cs.len(), total_vars);
     let mut layers = Vec::new();
     let mut layer_idx = 0usize;
     while num.len() > 1 {
@@ -46,7 +48,7 @@ pub fn prove_fractional(
             .collect();
         let next_den: Vec<Goldilocks> = (0..half).map(|s| den_low[s] * den_high[s]).collect();
         let r: Vec<Goldilocks> = full_r[..total_vars - layer_idx - 1].to_vec();
-        let c = rng.field();
+        let c = cs[layer_idx];
         let eq: Vec<Goldilocks> = crate::common::mle::eq_evals(&r);
         let mles: Vec<&[Goldilocks]> = vec![
             &eq, &next_num, &next_den, num_low, num_high, den_low, den_high,
@@ -62,9 +64,22 @@ pub fn prove_fractional(
         layers,
         final_num: num[0],
         final_den: den[0],
-        full_r,
+        full_r: full_r.to_vec(),
     }
 }
+
+pub fn prove_fractional(
+    num: Vec<Goldilocks>,
+    den: Vec<Goldilocks>,
+    rng: &mut impl ChallengeSource,
+) -> FractionalProof {
+    assert!(num.len().is_power_of_two());
+    let total_vars = num.len().trailing_zeros() as usize;
+    let full_r: Vec<Goldilocks> = (0..total_vars).map(|_| rng.field()).collect();
+    let cs: Vec<Goldilocks> = (0..total_vars).map(|_| rng.field()).collect();
+    prove_fractional_with_challenges(num, den, &full_r, &cs)
+}
+
 pub fn verify_fractional(
     proof: &FractionalProof,
     mut num: Vec<Goldilocks>,
