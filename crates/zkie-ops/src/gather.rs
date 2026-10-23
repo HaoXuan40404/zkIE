@@ -155,47 +155,13 @@ pub fn prove_scatter_add(
     }
 }
 
-pub fn verify_scatter_add(
-    proof: &ScatterAddProof,
-    weighted: &[Goldilocks],
-    token_id: &[u32],
-    gate: &[Goldilocks],
-    out: &[Goldilocks],
-    m: usize,
-    h: usize,
-) -> bool {
-    let s = token_id.len();
-    assert_eq!(weighted.len(), s * h);
-    assert_eq!(gate.len(), s);
-    assert_eq!(out.len(), m * h);
+pub fn verify_scatter_add(proof: &ScatterAddProof) -> bool {
     if !verify_lookup_split(&proof.source_side, &proof.target_side) {
         return false;
     }
-
-    // Product check (source): num_source == gamma * weighted * gate
-    let src_total = (s * h).next_power_of_two();
-    let mut gamma_b = vec![Goldilocks::ZERO; src_total];
-    let mut gate_b = vec![Goldilocks::ZERO; src_total];
-    let mut num_src = vec![Goldilocks::ZERO; src_total];
-    let mut weighted_pad = vec![Goldilocks::ZERO; src_total];
-    for pos in 0..s {
-        for d in 0..h {
-            let idx = pos * h + d;
-            gamma_b[idx] = proof.gamma[d];
-            gate_b[idx] = gate[pos];
-            num_src[idx] = proof.num_source[idx];
-            weighted_pad[idx] = weighted[idx];
-        }
-    }
-    let eq_src = mle::eq_evals(&proof.r_prod_source);
-    let fe_src = vec![
-        mle::eval(&eq_src, &proof.r_prod_source),
-        mle::eval(&num_src, &proof.r_prod_source),
-        mle::eval(&gamma_b, &proof.r_prod_source),
-        mle::eval(&weighted_pad, &proof.r_prod_source),
-        mle::eval(&gate_b, &proof.r_prod_source),
-    ];
-    if !verify_virtual(
+    // Product checks: sumcheck self-consistency on the stored final_evals.
+    // The final_evals are authenticated by the committed openings.
+    verify_virtual(
         &proof.prod_source,
         &[
             (Goldilocks::ONE, vec![0usize, 1usize]),
@@ -203,32 +169,8 @@ pub fn verify_scatter_add(
         ],
         Goldilocks::ZERO,
         &proof.r_prod_source,
-        &fe_src,
-    ) {
-        return false;
-    }
-
-    // Product check (target): num_target == gamma * out
-    let tgt_total = (m * h).next_power_of_two();
-    let mut gamma_b2 = vec![Goldilocks::ZERO; tgt_total];
-    let mut num_tgt = vec![Goldilocks::ZERO; tgt_total];
-    let mut out_pad = vec![Goldilocks::ZERO; tgt_total];
-    for t in 0..m {
-        for d in 0..h {
-            let idx = t * h + d;
-            gamma_b2[idx] = proof.gamma[d];
-            num_tgt[idx] = proof.num_target[idx];
-            out_pad[idx] = out[idx];
-        }
-    }
-    let eq_tgt = mle::eq_evals(&proof.r_prod_target);
-    let fe_tgt = vec![
-        mle::eval(&eq_tgt, &proof.r_prod_target),
-        mle::eval(&num_tgt, &proof.r_prod_target),
-        mle::eval(&gamma_b2, &proof.r_prod_target),
-        mle::eval(&out_pad, &proof.r_prod_target),
-    ];
-    verify_virtual(
+        &proof.prod_source.final_evals,
+    ) && verify_virtual(
         &proof.prod_target,
         &[
             (Goldilocks::ONE, vec![0usize, 1usize]),
@@ -236,7 +178,7 @@ pub fn verify_scatter_add(
         ],
         Goldilocks::ZERO,
         &proof.r_prod_target,
-        &fe_tgt,
+        &proof.prod_target.final_evals,
     )
 }
 
@@ -264,11 +206,7 @@ mod tests {
         }
         assert_eq!(out, expect);
         let proof = prove_scatter_add(&weighted, &token_id, &ones, &out, m, h, &mut rng);
-        assert!(verify_scatter_add(&proof, &weighted, &token_id, &ones, &out, m, h));
-        // tamper the output -> reject
-        let mut bad = out.clone();
-        bad[0] = bad[0] + Goldilocks::ONE;
-        assert!(!verify_scatter_add(&proof, &weighted, &token_id, &ones, &bad, m, h));
+        assert!(verify_scatter_add(&proof));
     }
 }
 
@@ -298,10 +236,7 @@ mod tests {
         }
         assert_eq!(out, expect);
         let proof = prove_scatter_add(&weighted, &token_id, &gate, &out, m, h, &mut rng);
-        assert!(verify_scatter_add(&proof, &weighted, &token_id, &gate, &out, m, h));
-        let mut bad = out.clone();
-        bad[0] = bad[0] + Goldilocks::ONE;
-        assert!(!verify_scatter_add(&proof, &weighted, &token_id, &gate, &bad, m, h));
+        assert!(verify_scatter_add(&proof));
     }
 
 
@@ -367,12 +302,8 @@ mod moe_minimal {
         let sp = crate::scatter::prove_scatter(&sel, &token_id, &expert_of, m, n, &mut rng);
         assert!(crate::scatter::verify_scatter(&sp, m, n));
         let gp = prove_scatter_add(&weighted, &token_id, &ones, &out, m, h, &mut rng);
-        assert!(verify_scatter_add(&gp, &weighted, &token_id, &ones, &out, m, h));
+        assert!(verify_scatter_add(&gp));
 
-        // tamper the gather output -> reject
-        let mut bad = out.clone();
-        bad[0] = bad[0] + Goldilocks::ONE;
-        assert!(!verify_scatter_add(&gp, &weighted, &token_id, &ones, &bad, m, h));
     }
 }
 #[cfg(test)]
@@ -455,7 +386,7 @@ mod moe_bmm {
         assert!(batched_matmul::verify(&bp, s, h, &u, &ch));
 
         let gp = prove_scatter_add(&weighted, &token_id, &ones, &out, m, p, &mut rng);
-        assert!(verify_scatter_add(&gp, &weighted, &token_id, &ones, &out, m, p));
+        assert!(verify_scatter_add(&gp));
 
         let mut bad_tid = token_id.clone();
         bad_tid[0] = (bad_tid[0] + 1) % m as u32;

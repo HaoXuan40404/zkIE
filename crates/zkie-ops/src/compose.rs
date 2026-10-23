@@ -2123,7 +2123,7 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                 }
             }
             (Op::Gather { m, h, .. }, OpProof::Gather(p)) => {
-                if !verify_scatter_add(p, &p.weighted, &p.token_id, &p.gate, &p.out, *m, *h) {
+                if !verify_scatter_add(p) {
                     return false;
                 }
             }
@@ -2695,12 +2695,14 @@ pub struct GatherOpening {
     pub commitment_weighted: zkie_core::pcs::whir::Commitment,
     pub commitment_gate: zkie_core::pcs::whir::Commitment,
     pub commitment_out: zkie_core::pcs::whir::Commitment,
+    pub commitment_token_id: zkie_core::pcs::whir::Commitment,
     pub arity_src: usize,
     pub arity_tgt: usize,
     pub arity_gate: usize,
     pub point_src: Vec<Goldilocks>,
     pub point_tgt: Vec<Goldilocks>,
     pub point_gate: Vec<Goldilocks>,
+    pub point_token_id: Vec<Goldilocks>,
     pub opening_num_source: zkie_core::pcs::whir::Proof,
     pub opening_den_source: zkie_core::pcs::whir::Proof,
     pub opening_num_target: zkie_core::pcs::whir::Proof,
@@ -2708,6 +2710,7 @@ pub struct GatherOpening {
     pub opening_weighted: zkie_core::pcs::whir::Proof,
     pub opening_gate: zkie_core::pcs::whir::Proof,
     pub opening_out: zkie_core::pcs::whir::Proof,
+    pub opening_token_id: zkie_core::pcs::whir::Proof,
     pub eval_num_source: Goldilocks,
     pub eval_den_source: Goldilocks,
     pub eval_num_target: Goldilocks,
@@ -2715,6 +2718,7 @@ pub struct GatherOpening {
     pub eval_weighted: Goldilocks,
     pub eval_gate: Goldilocks,
     pub eval_out: Goldilocks,
+    pub eval_token_id: Goldilocks,
     pub alpha: Goldilocks,
     pub gamma: Vec<Goldilocks>,
 }
@@ -3235,6 +3239,9 @@ pub fn prove_committed_shard_dag(
                 let c_weighted = zkie_core::pcs::committed::commit(&src_bw, &weighted_pad);
                 let c_out = zkie_core::pcs::committed::commit(&tgt_bw, &out_pad);
                 let c_gate = zkie_core::pcs::committed::commit(&gate_bw, &gate_pad);
+                let token_id_gold: Vec<Goldilocks> = sp.token_id.iter().map(|&t| Goldilocks::from_u64(t as u64)).collect();
+                let token_id_pad = pad(&token_id_gold, arity_gate);
+                let c_token_id = zkie_core::pcs::committed::commit(&gate_bw, &token_id_pad);
 
                 let mut ts = Transcript::new(b"zkie-committed-gather-v1");
                 absorb_statement(&mut ts, ops, ops_per_shard);
@@ -3246,6 +3253,7 @@ pub fn prove_committed_shard_dag(
                 ts.absorb(&bincode::serialize(&c_weighted.commitment).unwrap());
                 ts.absorb(&bincode::serialize(&c_out.commitment).unwrap());
                 ts.absorb(&bincode::serialize(&c_gate.commitment).unwrap());
+                ts.absorb(&bincode::serialize(&c_token_id.commitment).unwrap());
                 let alpha = ts.field();
                 let gamma: Vec<Goldilocks> = (0..*h).map(|_| ts.field()).collect();
 
@@ -3267,11 +3275,21 @@ pub fn prove_committed_shard_dag(
                 let point_gate: Vec<Goldilocks> = sp.r_prod_source[h_log..].to_vec();
                 let (open_gate, ev_gate) = gate_bw.open(c_gate.prover_data.clone(), &c_gate.protocol, &point_gate);
                 let (open_out, ev_out) = tgt_bw.open(c_out.prover_data.clone(), &c_out.protocol, &sp.r_prod_target);
+                let point_token_id: Vec<Goldilocks> = point_src[h_log..].to_vec();
+                let (open_token_id, ev_token_id) = gate_bw.open(c_token_id.prover_data.clone(), &c_token_id.protocol, &point_token_id);
 
                 sp.source_side = new_src;
                 sp.target_side = new_tgt;
                 sp.alpha = alpha;
                 sp.gamma = gamma.clone();
+                sp.weighted.clear();
+                sp.gate.clear();
+                sp.out.clear();
+                sp.num_source.clear();
+                sp.den_source.clear();
+                sp.num_target.clear();
+                sp.den_target.clear();
+                sp.token_id.clear();
 
                 gather_openings.push(GatherOpening {
                     commitment_num_source: c_num_source.commitment,
@@ -3281,12 +3299,14 @@ pub fn prove_committed_shard_dag(
                     commitment_weighted: c_weighted.commitment,
                     commitment_gate: c_gate.commitment,
                     commitment_out: c_out.commitment,
+                    commitment_token_id: c_token_id.commitment,
                     arity_src,
                     arity_tgt,
                     arity_gate,
                     point_src,
                     point_tgt,
                     point_gate,
+                    point_token_id,
                     opening_num_source: open_num_source,
                     opening_den_source: open_den_source,
                     opening_num_target: open_num_target,
@@ -3294,6 +3314,7 @@ pub fn prove_committed_shard_dag(
                     opening_weighted: open_weighted,
                     opening_gate: open_gate,
                     opening_out: open_out,
+                    opening_token_id: open_token_id,
                     eval_num_source: ev_num_source,
                     eval_den_source: ev_den_source,
                     eval_num_target: ev_num_target,
@@ -3301,6 +3322,7 @@ pub fn prove_committed_shard_dag(
                     eval_weighted: ev_weighted,
                     eval_gate: ev_gate,
                     eval_out: ev_out,
+                    eval_token_id: ev_token_id,
                     alpha,
                     gamma,
                 });
@@ -3502,6 +3524,12 @@ pub fn verify_committed_shard_dag(
         if gate_bw.verify(&go.commitment_gate, &go.opening_gate, &gate_protocol, &go.point_gate).ok() != Some(go.eval_gate) {
             return false;
         }
+        if gate_bw.verify(&go.commitment_token_id, &go.opening_token_id, &gate_protocol, &go.point_token_id).ok() != Some(go.eval_token_id) {
+            return false;
+        }
+        if go.eval_den_source != go.alpha - go.eval_token_id {
+            return false;
+        }
     }
 
     // Fiat-Shamir: reconstruct the transcript from the commitment roots,
@@ -3640,6 +3668,7 @@ pub fn verify_committed_shard_dag(
                     ts.absorb(&bincode::serialize(&go.commitment_weighted).unwrap());
                     ts.absorb(&bincode::serialize(&go.commitment_out).unwrap());
                     ts.absorb(&bincode::serialize(&go.commitment_gate).unwrap());
+                    ts.absorb(&bincode::serialize(&go.commitment_token_id).unwrap());
                     let alpha = ts.field();
                     let gamma: Vec<Goldilocks> = (0..*h).map(|_| ts.field()).collect();
                     if alpha != go.alpha || alpha != sp.alpha || gamma != go.gamma || gamma != sp.gamma {
