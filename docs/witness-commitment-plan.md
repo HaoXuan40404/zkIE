@@ -52,6 +52,13 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
   seq16: argmax 16/16, verify 21.5s -> 2.34s, Lookup proof 9.8MB -> 221KB,
   total proof 100.9MB -> 91.4MB. Remaining big heads: Argmax 50MB, Projection 35MB.
 
+## Progress log
+
+- Lookup migrated: verify 21.5s -> 2.34s, Lookup proof 9.8MB -> 221KB, total 100.9MB -> 91.4MB.
+- TopK/Argmax migrated (range checks chained, drop d1/d2/c0/c1/c2): Argmax 50.4MB -> 8.45MB
+  (sel kept for one-hot binding), total 91.4MB -> 49.4MB, verify 2.34s -> 2.25s. Remaining:
+  Projection 35.8MB, Argmax sel 8.45MB, Softmax 558KB, LayerNormCentered 408KB.
+
 ## Phases
 - P0: this document.
 - P1: store-free fractional-sumcheck core (logup_gkr.rs) + leaf claims.
