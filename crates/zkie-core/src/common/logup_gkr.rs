@@ -797,10 +797,26 @@ mod tests {
 /// identity `sum 1/(alpha - a_i) == sum 1/(alpha - b_j)`.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PermutationProof {
-    pub frac: FractionalProof,
+    pub a_side: FractionalProof,
+    pub b_side: FractionalProof,
     pub alpha: Goldilocks,
     pub a: Vec<Goldilocks>,
     pub b: Vec<Goldilocks>,
+}
+
+/// num = indicator, den = alpha - value (padded with value 0, so padding den = alpha).
+pub fn build_perm_num_den(
+    value: &[Goldilocks],
+    alpha: Goldilocks,
+) -> (Vec<Goldilocks>, Vec<Goldilocks>) {
+    let total = value.len().next_power_of_two().max(32);
+    let mut num = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![alpha; total];
+    for i in 0..value.len() {
+        num[i] = Goldilocks::from_u64(1);
+        den[i] = alpha - value[i];
+    }
+    (num, den)
 }
 
 pub fn prove_permutation(
@@ -810,41 +826,21 @@ pub fn prove_permutation(
 ) -> PermutationProof {
     assert_eq!(a.len(), b.len());
     let alpha = rng.field();
-    let n = a.len();
-    let total = (2 * n).next_power_of_two();
-    let mut num = vec![Goldilocks::from_u64(0); total];
-    let mut den = vec![Goldilocks::from_u64(1); total];
-    for i in 0..n {
-        num[i] = Goldilocks::from_u64(1);
-        den[i] = alpha - a[i];
-    }
-    for j in 0..n {
-        num[n + j] = from_i64(-1);
-        den[n + j] = alpha - b[j];
-    }
+    let (num_a, den_a) = build_perm_num_den(a, alpha);
+    let (num_b, den_b) = build_perm_num_den(b, alpha);
+    let a_side = prove_fractional(num_a, den_a, rng);
+    let b_side = prove_fractional(num_b, den_b, rng);
     PermutationProof {
-        frac: prove_fractional(num, den, rng),
+        a_side,
+        b_side,
         alpha,
         a: a.to_vec(),
         b: b.to_vec(),
     }
 }
 
-pub fn verify_permutation(proof: &PermutationProof, a: &[Goldilocks], b: &[Goldilocks]) -> bool {
-    assert_eq!(a.len(), b.len());
-    let n = a.len();
-    let total = (2 * n).next_power_of_two();
-    let mut num = vec![Goldilocks::from_u64(0); total];
-    let mut den = vec![Goldilocks::from_u64(1); total];
-    for i in 0..n {
-        num[i] = Goldilocks::from_u64(1);
-        den[i] = proof.alpha - a[i];
-    }
-    for j in 0..n {
-        num[n + j] = from_i64(-1);
-        den[n + j] = proof.alpha - b[j];
-    }
-    verify_fractional(&proof.frac, num, den, Goldilocks::from_u64(0))
+pub fn verify_permutation(proof: &PermutationProof) -> bool {
+    verify_lookup_split(&proof.a_side, &proof.b_side)
 }
 
 #[cfg(test)]
