@@ -101,3 +101,5 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 - Table-side multiplicity m committed + opened per table (per-shape, no cross-shape merge, per user: batch only same-shape). GPT-2 seq16: prove 36.4s -> 51.48s, verify 2.05s, proof 21.1MB -> 22.86MB, rss ~14.5GB, argmax 16/16.
 
 - Fiat-Shamir wired: fractional full_r/per-layer c now derived from a Transcript that absorbs the committed num/den/m roots (prover re-runs the chained GKR; verifier replays and checks the challenges match). GPT-2 seq16: argmax 16/16, prove 51.5s -> 66.2s (re-run cost), verify 2.05s -> 2.08s, rss ~14.4GB, proof ~21.8MB.
+
+- Table body commitment landed (P2 done): table column padded + committed + opened at leaf; verifier checks den_leaf == alpha + eval(j) + beta*eval(table). GPT-2 seq16: argmax 16/16, prove 66.2s -> 82.1s (per-shard table commit, redundant across shards), verify 2.08s -> 2.12s, proof ~23.5MB, rss ~15.5GB.
