@@ -894,8 +894,9 @@ pub fn rsqrt_index(var: i64) -> u32 {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct WitnessColumn {
     pub proof: FractionalProof,
+    pub x: Vec<Goldilocks>,
+    pub y: Vec<Goldilocks>,
     pub num: Vec<Goldilocks>,
-    pub den: Vec<Goldilocks>,
     pub point: Vec<Goldilocks>,
     pub num_leaf: Goldilocks,
     pub den_leaf: Goldilocks,
@@ -2047,15 +2048,16 @@ pub fn prove_shard_precomputed(
         let beta = rng.field();
         let xs: Vec<&[u32]> = lookups.iter().map(|(x, _)| x.as_slice()).collect();
         let ys: Vec<&[Goldilocks]> = lookups.iter().map(|(_, y)| y.as_slice()).collect();
-        let (proof, num, den) = prove_lookup_witness_batch_columns(&xs, &ys, alpha, beta, rng);
+        let (proof, x, y, num, _den) = prove_lookup_witness_batch_columns(&xs, &ys, alpha, beta, rng);
         let (point, num_leaf, den_leaf) = fractional_leaf(&proof);
         let m = merge_multiplicity(&xs, store.get(*table).len());
         let table_proof = prove_lookup_table(&m, store.get(*table), alpha, beta, rng);
         let (point_t, num_leaf_t, den_leaf_t) = fractional_leaf(&table_proof);
         witness_columns.push(WitnessColumn {
             proof,
+            x,
+            y,
             num,
-            den,
             point,
             num_leaf,
             den_leaf,
@@ -2708,14 +2710,20 @@ pub struct TableOpening {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct WitnessOpening {
+    pub commitment_x: zkie_core::pcs::whir::Commitment,
+    pub commitment_y: zkie_core::pcs::whir::Commitment,
     pub commitment_num: zkie_core::pcs::whir::Commitment,
-    pub commitment_den: zkie_core::pcs::whir::Commitment,
+    pub opening_x: zkie_core::pcs::whir::Proof,
+    pub opening_y: zkie_core::pcs::whir::Proof,
     pub opening_num: zkie_core::pcs::whir::Proof,
-    pub opening_den: zkie_core::pcs::whir::Proof,
     pub arity: usize,
     pub point: Vec<Goldilocks>,
     pub num_leaf: Goldilocks,
     pub den_leaf: Goldilocks,
+    pub eval_x: Goldilocks,
+    pub eval_y: Goldilocks,
+    pub alpha: Goldilocks,
+    pub beta: Goldilocks,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2870,17 +2878,19 @@ pub fn prove_committed_shard_dag(
     let mut witness_openings = Vec::new();
     let mut table_openings = Vec::new();
     for (si, shard) in shards.iter_mut().enumerate() {
-        // Phase 1: commit witness num/den and table multiplicity (keep prover data).
+        // Phase 1: commit witness x/y/num and table m/table (keep prover data).
         let mut w_arity: Vec<usize> = Vec::new();
+        let mut w_cx: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
+        let mut w_cy: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
         let mut w_cnum: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
-        let mut w_cden: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
         for wc in &shard.witness_columns {
             let arity = wc.num.len().trailing_zeros() as usize;
             let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
             let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
             w_arity.push(arity);
+            w_cx.push(zkie_core::pcs::committed::commit(&bw, &wc.x));
+            w_cy.push(zkie_core::pcs::committed::commit(&bw, &wc.y));
             w_cnum.push(zkie_core::pcs::committed::commit(&bw, &wc.num));
-            w_cden.push(zkie_core::pcs::committed::commit(&bw, &wc.den));
         }
         let mut t_arity: Vec<usize> = Vec::new();
         let mut t_cm: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
@@ -2901,16 +2911,24 @@ pub fn prove_committed_shard_dag(
         }
 
         // Phase 2: Fiat-Shamir transcript absorbs the statement and every
-        // commitment root, then derives the fractional challenges in order.
+        // commitment root, then derives alpha/beta per table and full_r/c.
         let mut ts = Transcript::new(b"zkie-committed-frac-v1");
         absorb_statement(&mut ts, ops, ops_per_shard);
         ts.absorb_u64(si as u64);
-        for (cn, cd) in w_cnum.iter().zip(w_cden.iter()) {
-            ts.absorb(&bincode::serialize(&cn.commitment).unwrap());
-            ts.absorb(&bincode::serialize(&cd.commitment).unwrap());
+        for i in 0..w_arity.len() {
+            ts.absorb(&bincode::serialize(&w_cx[i].commitment).unwrap());
+            ts.absorb(&bincode::serialize(&w_cy[i].commitment).unwrap());
+            ts.absorb(&bincode::serialize(&w_cnum[i].commitment).unwrap());
         }
-        for cm in &t_cm {
-            ts.absorb(&bincode::serialize(&cm.commitment).unwrap());
+        for i in 0..t_arity.len() {
+            ts.absorb(&bincode::serialize(&t_cm[i].commitment).unwrap());
+            ts.absorb(&bincode::serialize(&t_ctable[i].commitment).unwrap());
+        }
+        let mut alphas: Vec<Goldilocks> = Vec::new();
+        let mut betas: Vec<Goldilocks> = Vec::new();
+        for _ in 0..w_arity.len() {
+            alphas.push(ts.field());
+            betas.push(ts.field());
         }
         let mut w_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
         for &a in &w_arity {
@@ -2925,48 +2943,55 @@ pub fn prove_committed_shard_dag(
         // each column at the new leaf point.
         for (i, wc) in shard.witness_columns.iter_mut().enumerate() {
             let (full_r, cs) = &w_challs[i];
+            let alpha = alphas[i];
+            let beta = betas[i];
+            let x = std::mem::take(&mut wc.x);
+            let y = std::mem::take(&mut wc.y);
             let num = std::mem::take(&mut wc.num);
-            let den = std::mem::take(&mut wc.den);
+            let total = x.len();
+            let mut den = vec![Goldilocks::from_u64(0); total];
+            for j in 0..total {
+                den[j] = alpha + x[j] + beta * y[j];
+            }
             let new_proof = prove_fractional_with_challenges(num, den, full_r, cs);
             let (point, num_leaf, den_leaf) = fractional_leaf(&new_proof);
             let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(w_arity[i], 90);
             let bw = zkie_core::pcs::whir::Whir::with_params(w_arity[i], 90, pow_bits);
-            let (open_num, ev_num) = bw.open(
-                w_cnum[i].prover_data.clone(),
-                &w_cnum[i].protocol,
-                &point,
-            );
-            let (open_den, ev_den) = bw.open(
-                w_cden[i].prover_data.clone(),
-                &w_cden[i].protocol,
-                &point,
-            );
+            let (open_x, ev_x) = bw.open(w_cx[i].prover_data.clone(), &w_cx[i].protocol, &point);
+            let (open_y, ev_y) = bw.open(w_cy[i].prover_data.clone(), &w_cy[i].protocol, &point);
+            let (open_num, ev_num) = bw.open(w_cnum[i].prover_data.clone(), &w_cnum[i].protocol, &point);
             assert_eq!(ev_num, num_leaf);
-            assert_eq!(ev_den, den_leaf);
             wc.proof = new_proof;
             wc.point = point.clone();
             wc.num_leaf = num_leaf;
             wc.den_leaf = den_leaf;
             witness_openings.push(WitnessOpening {
+                commitment_x: w_cx[i].commitment.clone(),
+                commitment_y: w_cy[i].commitment.clone(),
                 commitment_num: w_cnum[i].commitment.clone(),
-                commitment_den: w_cden[i].commitment.clone(),
+                opening_x: open_x,
+                opening_y: open_y,
                 opening_num: open_num,
-                opening_den: open_den,
                 arity: w_arity[i],
                 point,
                 num_leaf,
                 den_leaf,
+                eval_x: ev_x,
+                eval_y: ev_y,
+                alpha,
+                beta,
             });
             wc.num.clear();
-            wc.den.clear();
         }
         for (i, tc) in shard.table_columns.iter_mut().enumerate() {
             let (full_r, cs) = &t_challs[i];
+            let alpha = alphas[i];
+            let beta = betas[i];
             let (num_t, den_t) = build_lookup_table_num_den(
                 &tc.m,
                 store.get(tc.table),
-                tc.alpha,
-                tc.beta,
+                alpha,
+                beta,
             );
             let new_proof = prove_fractional_with_challenges(num_t, den_t, full_r, cs);
             let (point, num_leaf, den_leaf) = fractional_leaf(&new_proof);
@@ -2988,8 +3013,8 @@ pub fn prove_committed_shard_dag(
                 table_commitment: t_ctable[i].commitment.clone(),
                 table_opening: open_table,
                 table_eval: ev_table,
-                alpha: tc.alpha,
-                beta: tc.beta,
+                alpha,
+                beta,
                 den_leaf,
             });
             tc.m.clear();
@@ -3109,14 +3134,21 @@ pub fn verify_committed_shard_dag(
         if bw.verify(&wo.commitment_num, &wo.opening_num, &protocol, &wo.point).ok() != Some(wo.num_leaf) {
             return false;
         }
-        if bw.verify(&wo.commitment_den, &wo.opening_den, &protocol, &wo.point).ok() != Some(wo.den_leaf) {
+        if bw.verify(&wo.commitment_x, &wo.opening_x, &protocol, &wo.point).ok() != Some(wo.eval_x) {
+            return false;
+        }
+        if bw.verify(&wo.commitment_y, &wo.opening_y, &protocol, &wo.point).ok() != Some(wo.eval_y) {
+            return false;
+        }
+        let expected_den = wo.alpha + wo.eval_x + wo.beta * wo.eval_y;
+        if expected_den != wo.den_leaf {
             return false;
         }
     }
 
-    // Fiat-Shamir: reconstruct the transcript from the commitment roots and
-    // verify every fractional proof used the derived challenges (full_r and
-    // per-layer c), so the prover cannot pick favourable evaluation points.
+    // Fiat-Shamir: reconstruct the transcript from the commitment roots,
+    // derive alpha/beta and the fractional challenges, and verify the prover
+    // used exactly those derived values.
     {
         let mut wi = 0usize;
         let mut ti = 0usize;
@@ -3126,14 +3158,36 @@ pub fn verify_committed_shard_dag(
             ts.absorb_u64(si as u64);
             for _ in &shard.witness_columns {
                 let wo = &proof.witness_openings[wi];
+                ts.absorb(&bincode::serialize(&wo.commitment_x).unwrap());
+                ts.absorb(&bincode::serialize(&wo.commitment_y).unwrap());
                 ts.absorb(&bincode::serialize(&wo.commitment_num).unwrap());
-                ts.absorb(&bincode::serialize(&wo.commitment_den).unwrap());
                 wi += 1;
             }
             for _ in &shard.table_columns {
                 let to = &proof.table_openings[ti];
                 ts.absorb(&bincode::serialize(&to.commitment).unwrap());
+                ts.absorb(&bincode::serialize(&to.table_commitment).unwrap());
                 ti += 1;
+            }
+            let w_base = wi - shard.witness_columns.len();
+            let t_base = ti - shard.table_columns.len();
+            let mut alphas: Vec<Goldilocks> = Vec::new();
+            let mut betas: Vec<Goldilocks> = Vec::new();
+            for _ in &shard.witness_columns {
+                alphas.push(ts.field());
+                betas.push(ts.field());
+            }
+            for (i, _) in shard.witness_columns.iter().enumerate() {
+                let wo = &proof.witness_openings[w_base + i];
+                if wo.alpha != alphas[i] || wo.beta != betas[i] {
+                    return false;
+                }
+            }
+            for (i, _) in shard.table_columns.iter().enumerate() {
+                let to = &proof.table_openings[t_base + i];
+                if to.alpha != alphas[i] || to.beta != betas[i] {
+                    return false;
+                }
             }
             for wc in &shard.witness_columns {
                 let full_r = ts.field_vec(wc.proof.full_r.len());

@@ -343,22 +343,28 @@ pub fn prove_lookup_witness_batch_columns(
     alpha: Goldilocks,
     beta: Goldilocks,
     rng: &mut impl ChallengeSource,
-) -> (FractionalProof, Vec<Goldilocks>, Vec<Goldilocks>) {
+) -> (FractionalProof, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>) {
     assert_eq!(xs.len(), ys.len());
     let n: usize = xs.iter().map(|x| x.len()).sum();
     let total = n.next_power_of_two();
     let mut num = vec![Goldilocks::from_u64(0); total];
-    let mut den = vec![Goldilocks::from_u64(1); total];
+    let mut x_flat = vec![Goldilocks::from_u64(0); total];
+    let mut y_flat = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![Goldilocks::from_u64(0); total];
     let mut pos = 0usize;
     for (x, y) in xs.iter().zip(ys.iter()) {
         for i in 0..x.len() {
             num[pos] = Goldilocks::from_u64(1);
-            den[pos] = alpha + Goldilocks::from_u64(x[i] as u64) + beta * y[i];
+            x_flat[pos] = Goldilocks::from_u64(x[i] as u64);
+            y_flat[pos] = y[i];
             pos += 1;
         }
     }
+    for j in 0..total {
+        den[j] = alpha + x_flat[j] + beta * y_flat[j];
+    }
     let proof = prove_fractional(num.clone(), den.clone(), rng);
-    (proof, num, den)
+    (proof, x_flat, y_flat, num, den)
 }
 
 pub fn prove_lookup_table(
