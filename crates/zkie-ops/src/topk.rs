@@ -265,6 +265,7 @@ mod tests {
 pub struct ArgmaxProof {
     pub topk: TopKSelectProof,
     pub out: Vec<u32>,
+    pub sel_evals: Vec<Goldilocks>,
 }
 
 /// `(thr, sel, gate, d1, d2, out)`.
@@ -312,6 +313,7 @@ pub fn prove_argmax(
     ArgmaxProof {
         topk,
         out: out.to_vec(),
+        sel_evals: Vec::new(),
     }
 }
 
@@ -321,7 +323,15 @@ pub fn verify_argmax(proof: &ArgmaxProof, m: usize, n: usize) -> bool {
     }
     for i in 0..m {
         let j = proof.out[i] as usize;
-        if j >= n || proof.topk.sel[i * n + j] != Goldilocks::ONE {
+        if j >= n {
+            return false;
+        }
+        let v = if proof.sel_evals.is_empty() {
+            proof.topk.sel[i * n + j]
+        } else {
+            proof.sel_evals[i]
+        };
+        if v != Goldilocks::ONE {
             return false;
         }
     }

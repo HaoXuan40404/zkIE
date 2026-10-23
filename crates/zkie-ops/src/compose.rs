@@ -2727,6 +2727,14 @@ pub struct WitnessOpening {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+pub struct SelOpening {
+    pub commitment: zkie_core::pcs::whir::Commitment,
+    pub arity: usize,
+    pub points: Vec<Vec<Goldilocks>>,
+    pub openings: Vec<zkie_core::pcs::whir::Proof>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct CommittedShardDagProof {
     pub shards: Vec<OpShardProof>,
     pub boundary_tensors: Vec<T>,
@@ -2739,6 +2747,7 @@ pub struct CommittedShardDagProof {
     pub argmax_t: Vec<u32>,
     pub witness_openings: Vec<WitnessOpening>,
     pub table_openings: Vec<TableOpening>,
+    pub sel_openings: Vec<SelOpening>,
 }
 
 pub fn prove_committed_shard_dag(
@@ -3021,6 +3030,50 @@ pub fn prove_committed_shard_dag(
         }
     }
 
+    // Commit + open each Argmax one-hot `sel` at the m claimed output
+    // positions, so the argmax-index binding is authenticated without the
+    // plaintext m x n selection matrix.
+    let mut sel_openings = Vec::new();
+    let sel_ranges = shard_ranges(ops.len(), ops_per_shard);
+    for (si, &(s, e)) in sel_ranges.iter().enumerate() {
+        for (op, op_proof) in ops[s..e].iter().zip(shards[si].ops.iter_mut()) {
+            if let (Op::Argmax { sel: sel_t, out: out_t, m, n, .. }, OpProof::Argmax(ap)) = (op, op_proof) {
+                let sel_vec = store.get(*sel_t);
+                let total = sel_vec.len().next_power_of_two();
+                let arity = total.trailing_zeros() as usize;
+                let mut sel_pad = vec![Goldilocks::ZERO; total];
+                sel_pad[..sel_vec.len()].copy_from_slice(sel_vec);
+                let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
+                let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+                let c = zkie_core::pcs::committed::commit(&bw, &sel_pad);
+                let out_vals = &store.idx[*out_t];
+                let mut points = Vec::new();
+                let mut evals = Vec::new();
+                let mut openings = Vec::new();
+                for i in 0..*m {
+                    let j = out_vals[i] as usize;
+                    let idx = i * *n + j;
+                    let point: Vec<Goldilocks> = (0..arity)
+                        .map(|k| Goldilocks::from_u64(((idx >> k) & 1) as u64))
+                        .collect();
+                    let (opening, ev) = bw.open(c.prover_data.clone(), &c.protocol, &point);
+                    assert_eq!(ev, Goldilocks::ONE);
+                    points.push(point);
+                    evals.push(ev);
+                    openings.push(opening);
+                }
+                ap.sel_evals = evals;
+                ap.topk.sel.clear();
+                sel_openings.push(SelOpening {
+                    commitment: c.commitment,
+                    arity,
+                    points,
+                    openings,
+                });
+            }
+        }
+    }
+
     CommittedShardDagProof {
         shards,
         boundary_tensors,
@@ -3033,6 +3086,7 @@ pub fn prove_committed_shard_dag(
         argmax_t: store.idx[argmax_t].clone(),
         witness_openings,
         table_openings,
+        sel_openings,
     }
 }
 
@@ -3143,6 +3197,16 @@ pub fn verify_committed_shard_dag(
         let expected_den = wo.alpha + wo.eval_x + wo.beta * wo.eval_y;
         if expected_den != wo.den_leaf {
             return false;
+        }
+    }
+    for so in &proof.sel_openings {
+        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(so.arity, 90);
+        let bw = zkie_core::pcs::whir::Whir::with_params(so.arity, 90, pow_bits);
+        let protocol = bw.opening_protocol(so.arity, 1);
+        for (opening, point) in so.openings.iter().zip(so.points.iter()) {
+            if bw.verify(&so.commitment, opening, &protocol, point).ok() != Some(Goldilocks::ONE) {
+                return false;
+            }
         }
     }
 
