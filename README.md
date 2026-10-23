@@ -100,22 +100,14 @@ gitignored and expected under each model's `weights/` directory (export steps
 and sha256 are in the per-model `README.md`).
 
 ```bash
-# GPT-2 124M - end-to-end proof, shard sweep, and autotune
+# Committed store-free path (commit + prove + verify, real input/output)
+M=16 cargo run --release -p zkie-models-gpt2 --example bench_committed
+cargo run --release -p zkie-models-timesfm --example bench_committed
+cargo run --release -p zkie-models-gemma3 --example bench_committed
+M=16 cargo run --release -p zkie-models-deepseek-v2-lite --example bench_committed
+
+# Plain (non-committed) reference path
 cargo run --release -p zkie-models-gpt2 --example prove
-cargo run --release -p zkie-models-gpt2 --example bench_sharded
-cargo run --release -p zkie-models-gpt2 --example bench_autotune
-
-# TimesFM 1.0 200M
-cargo run --release -p zkie-models-timesfm --example prove
-cargo run --release -p zkie-models-timesfm --example bench
-
-# Gemma 3 270M (sequence length via GEMMA_SEQ, default 16)
-GEMMA_SEQ=16 cargo run --release -p zkie-models-gemma3 --example prove
-GEMMA_SEQ=16 cargo run --release -p zkie-models-gemma3 --example bench
-
-# DeepSeek-V2-Lite (sequence length via M, default 16)
-M=16 cargo run --release -p zkie-models-deepseek-v2-lite --example prove
-M=16 cargo run --release -p zkie-models-deepseek-v2-lite --example bench
 
 # library tests
 cargo test --workspace
