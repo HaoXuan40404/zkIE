@@ -6,12 +6,20 @@
 use zkie_core::common::field::{Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::from_i64;
 use zkie_core::common::logup_gkr::{prove_fractional, verify_fractional, FractionalProof};
+use zkie_core::common::mle;
+use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ScatterAddProof {
     pub frac: FractionalProof,
     pub alpha: Goldilocks,
     pub gamma: Vec<Goldilocks>,
+    pub num: Vec<Goldilocks>,
+    pub den: Vec<Goldilocks>,
+    pub prod_source: VirtualProof,
+    pub prod_target: VirtualProof,
+    pub r_prod_source: Vec<Goldilocks>,
+    pub r_prod_target: Vec<Goldilocks>,
     pub weighted: Vec<Goldilocks>,
     pub gate: Vec<Goldilocks>,
     pub out: Vec<Goldilocks>,
@@ -66,11 +74,72 @@ pub fn prove_scatter_add(
             den[s * h + t * h + d] = alpha - Goldilocks::from_u64(t as u64);
         }
     }
-    let frac = prove_fractional(num, den, rng);
+    let frac = prove_fractional(num.clone(), den.clone(), rng);
+
+    // Product check (source): num[pos*h+d] == gamma[d]*weighted[pos*h+d]*gate[pos]
+    let src_total = (s * h).next_power_of_two();
+    let src_arity = src_total.trailing_zeros() as usize;
+    let r_prod_source: Vec<Goldilocks> = (0..src_arity).map(|_| rng.field()).collect();
+    let eq_src = mle::eq_evals(&r_prod_source);
+    let mut gamma_b = vec![Goldilocks::ZERO; src_total];
+    let mut gate_b = vec![Goldilocks::ZERO; src_total];
+    let mut num_src = vec![Goldilocks::ZERO; src_total];
+    let mut weighted_pad = vec![Goldilocks::ZERO; src_total];
+    for pos in 0..s {
+        for d in 0..h {
+            let idx = pos * h + d;
+            gamma_b[idx] = gamma[d];
+            gate_b[idx] = gate[pos];
+            num_src[idx] = num[idx];
+            weighted_pad[idx] = weighted[idx];
+        }
+    }
+    let prod_source = prove_virtual(
+        &[&eq_src, &num_src, &gamma_b, &weighted_pad, &gate_b],
+        &[
+            (Goldilocks::ONE, vec![0usize, 1usize]),
+            (Goldilocks::ZERO - Goldilocks::ONE, vec![0usize, 2usize, 3usize, 4usize]),
+        ],
+        Goldilocks::ZERO,
+        &r_prod_source,
+    );
+
+    // Product check (target): num[s*h+t*h+d] == -gamma[d]*out[t*h+d]
+    let tgt_total = (m * h).next_power_of_two();
+    let tgt_arity = tgt_total.trailing_zeros() as usize;
+    let r_prod_target: Vec<Goldilocks> = (0..tgt_arity).map(|_| rng.field()).collect();
+    let eq_tgt = mle::eq_evals(&r_prod_target);
+    let mut gamma_b2 = vec![Goldilocks::ZERO; tgt_total];
+    let mut num_tgt = vec![Goldilocks::ZERO; tgt_total];
+    let mut out_pad = vec![Goldilocks::ZERO; tgt_total];
+    for t in 0..m {
+        for d in 0..h {
+            let idx = t * h + d;
+            gamma_b2[idx] = gamma[d];
+            num_tgt[idx] = num[s * h + idx];
+            out_pad[idx] = out[idx];
+        }
+    }
+    let prod_target = prove_virtual(
+        &[&eq_tgt, &num_tgt, &gamma_b2, &out_pad],
+        &[
+            (Goldilocks::ONE, vec![0usize, 1usize]),
+            (Goldilocks::ONE, vec![0usize, 2usize, 3usize]),
+        ],
+        Goldilocks::ZERO,
+        &r_prod_target,
+    );
+
     ScatterAddProof {
         frac,
         alpha,
         gamma,
+        num,
+        den,
+        prod_source,
+        prod_target,
+        r_prod_source,
+        r_prod_target,
         weighted: weighted.to_vec(),
         gate: gate.to_vec(),
         out: out.to_vec(),
@@ -91,22 +160,76 @@ pub fn verify_scatter_add(
     assert_eq!(weighted.len(), s * h);
     assert_eq!(gate.len(), s);
     assert_eq!(out.len(), m * h);
-    let total = (s * h + m * h).next_power_of_two();
-    let mut num = vec![Goldilocks::ZERO; total];
-    let mut den = vec![Goldilocks::ONE; total];
+    if !verify_fractional(&proof.frac, proof.num.clone(), proof.den.clone(), Goldilocks::ZERO) {
+        return false;
+    }
+
+    // Product check (source): num_source == gamma * weighted * gate
+    let src_total = (s * h).next_power_of_two();
+    let mut gamma_b = vec![Goldilocks::ZERO; src_total];
+    let mut gate_b = vec![Goldilocks::ZERO; src_total];
+    let mut num_src = vec![Goldilocks::ZERO; src_total];
+    let mut weighted_pad = vec![Goldilocks::ZERO; src_total];
     for pos in 0..s {
         for d in 0..h {
-            num[pos * h + d] = proof.gamma[d] * weighted[pos * h + d] * gate[pos];
-            den[pos * h + d] = proof.alpha - Goldilocks::from_u64(token_id[pos] as u64);
+            let idx = pos * h + d;
+            gamma_b[idx] = proof.gamma[d];
+            gate_b[idx] = gate[pos];
+            num_src[idx] = proof.num[idx];
+            weighted_pad[idx] = weighted[idx];
         }
     }
+    let eq_src = mle::eq_evals(&proof.r_prod_source);
+    let fe_src = vec![
+        mle::eval(&eq_src, &proof.r_prod_source),
+        mle::eval(&num_src, &proof.r_prod_source),
+        mle::eval(&gamma_b, &proof.r_prod_source),
+        mle::eval(&weighted_pad, &proof.r_prod_source),
+        mle::eval(&gate_b, &proof.r_prod_source),
+    ];
+    if !verify_virtual(
+        &proof.prod_source,
+        &[
+            (Goldilocks::ONE, vec![0usize, 1usize]),
+            (Goldilocks::ZERO - Goldilocks::ONE, vec![0usize, 2usize, 3usize, 4usize]),
+        ],
+        Goldilocks::ZERO,
+        &proof.r_prod_source,
+        &fe_src,
+    ) {
+        return false;
+    }
+
+    // Product check (target): num_target == -gamma * out
+    let tgt_total = (m * h).next_power_of_two();
+    let mut gamma_b2 = vec![Goldilocks::ZERO; tgt_total];
+    let mut num_tgt = vec![Goldilocks::ZERO; tgt_total];
+    let mut out_pad = vec![Goldilocks::ZERO; tgt_total];
     for t in 0..m {
         for d in 0..h {
-            num[s * h + t * h + d] = from_i64(-1) * proof.gamma[d] * out[t * h + d];
-            den[s * h + t * h + d] = proof.alpha - Goldilocks::from_u64(t as u64);
+            let idx = t * h + d;
+            gamma_b2[idx] = proof.gamma[d];
+            num_tgt[idx] = proof.num[s * h + idx];
+            out_pad[idx] = out[idx];
         }
     }
-    verify_fractional(&proof.frac, num, den, Goldilocks::ZERO)
+    let eq_tgt = mle::eq_evals(&proof.r_prod_target);
+    let fe_tgt = vec![
+        mle::eval(&eq_tgt, &proof.r_prod_target),
+        mle::eval(&num_tgt, &proof.r_prod_target),
+        mle::eval(&gamma_b2, &proof.r_prod_target),
+        mle::eval(&out_pad, &proof.r_prod_target),
+    ];
+    verify_virtual(
+        &proof.prod_target,
+        &[
+            (Goldilocks::ONE, vec![0usize, 1usize]),
+            (Goldilocks::ONE, vec![0usize, 2usize, 3usize]),
+        ],
+        Goldilocks::ZERO,
+        &proof.r_prod_target,
+        &fe_tgt,
+    )
 }
 
 #[cfg(test)]
