@@ -99,3 +99,5 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 - GPT-2 seq16 (16/16) and seq512 (511/512) argmax unchanged; prove/verify not slower than current committed baseline.
 
 - Table-side multiplicity m committed + opened per table (per-shape, no cross-shape merge, per user: batch only same-shape). GPT-2 seq16: prove 36.4s -> 51.48s, verify 2.05s, proof 21.1MB -> 22.86MB, rss ~14.5GB, argmax 16/16.
+
+- Fiat-Shamir wired: fractional full_r/per-layer c now derived from a Transcript that absorbs the committed num/den/m roots (prover re-runs the chained GKR; verifier replays and checks the challenges match). GPT-2 seq16: argmax 16/16, prove 51.5s -> 66.2s (re-run cost), verify 2.05s -> 2.08s, rss ~14.4GB, proof ~21.8MB.
