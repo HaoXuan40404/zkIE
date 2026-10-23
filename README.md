@@ -124,7 +124,7 @@ is in [`docs/benchmarks.md`](docs/benchmarks.md).
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | TimesFM 1.0 200M | 200M / 200M | seq=16, 108 ops/shard (committed) | ~25.0 s | ~141.4 s | ~4.3 s | - | ~21.7 GB | ~114.6 MB |
 | GPT-2 124M | 124M / 124M | seq=16, 13 shards (per layer, committed) | ~11.7 s | ~100.1 s | ~0.8 s | 16/16 | ~24.7 GB | ~22.4 MB |
-| GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer, committed) | — | pending | pending | pending | pending | pending |
+| GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer, committed) | ~18.6 s | ~863.0 s (~14.4 min) | ~3.8 s | 512/512 | ~45.4 GB | ~96.1 MB |
 | Gemma 3 270M | 270M / 270M | seq=16, 22 shards (per layer, committed) | ~21.7 s | ~299.6 s | ~2.0 s | 16/16 | ~60.7 GB | ~42.6 MB |
 | Gemma 3 270M | 270M / 270M | seq=512, 22 shards (per layer, committed) | — | pending | pending | pending | pending | pending |
 | DeepSeek-V2-Lite | 2.4B / 15.7B | seq=16, 12 shards (expert-major MoE, mmap weights, committed) | ~79.3 s | ~651.8 s (~10.9 min) | ~3.6 s | 16/16 | ~156.6 GB | ~96.0 MB |
