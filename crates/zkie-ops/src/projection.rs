@@ -6,7 +6,8 @@
 use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i32};
 use zkie_core::common::logup_gkr::{
-    prove_lookup_fractional, verify_lookup_fractional, FractionalProof,
+    prove_lookup_fractional, verify_lookup_fractional, verify_lookup_fractional_chain,
+    FractionalProof,
 };
 use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, MatmulProof};
 use zkie_core::common::sumcheck::{prove_virtual, verify_virtual, VirtualProof};
@@ -21,7 +22,6 @@ pub struct ProjectionProof {
     pub u: Vec<Goldilocks>,
     pub v: Vec<Goldilocks>,
     pub ch: Vec<Goldilocks>,
-    pub rem_off: Vec<Goldilocks>,
 }
 fn matmul_full(
     x: &[Goldilocks],
@@ -98,7 +98,6 @@ pub fn prove_projection(
         u,
         v,
         ch,
-        rem_off: rem_off.to_vec(),
     }
 }
 pub fn verify_projection(proof: &ProjectionProof, shift: u32) -> bool {
@@ -126,15 +125,7 @@ pub fn verify_projection(proof: &ProjectionProof, shift: u32) -> bool {
     if !matmul_verify(&proof.matmul, &proof.ch) {
         return false;
     }
-    let table: Vec<Goldilocks> = (0..(1usize << shift))
-        .map(|j| Goldilocks::from_u64(j as u64))
-        .collect();
-    let idx: Vec<u32> = proof
-        .rem_off
-        .iter()
-        .map(|&vv| to_i32(vv) as u32)
-        .collect();
-    verify_lookup_fractional(&proof.frac, &idx, &proof.rem_off, &table, proof.alpha, proof.beta)
+    verify_lookup_fractional_chain(&proof.frac)
 }
 #[cfg(test)]
 mod tests {
@@ -187,7 +178,7 @@ mod tests {
         let _ = (half, two_shift);
         let mut proof = prove_projection(&x, &w, &bias, &out, &rem_off, m, k, n, shift, &mut rng);
         assert!(verify_projection(&proof, shift));
-        proof.rem_off[0] = proof.rem_off[0] + Goldilocks::from_u64(1);
+        proof.frac.layers[0].proof.final_evals[3] += Goldilocks::from_u64(1);
         assert!(!verify_projection(&proof, shift));
     }
     #[test]
