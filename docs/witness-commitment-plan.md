@@ -67,6 +67,17 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 - Projection migrated (drop rem_off): Projection 35.8MB -> 5.5MB, total ~49.4MB -> ~18MB.
   Remaining: Argmax sel 8.45MB (needs opening), Softmax 558KB, LayerNormCentered 408KB.
 
+## Progress log
+
+- Lookup/TopK/Argmax/Projection plaintext witness removed; proof 100.9MB -> 22.8MB, verify 21.5s -> 2.11s.
+- Lookup witness commit + opening (per-column) sound: argmax 16/16, prove 128s / rss 38GB.
+- Batch commit experiments REVERTED: PoW is intrinsic (required_pow_bits grows with num_variables),
+  batch does not amortise it and inflates peak memory. security 90 must not drop (user).
+- Split LogUp protocol complete (logup_gkr.rs): witness/table sides + LogUp link,
+  table-side (m+table) commit/open, merge_multiplicity, batch witness side.
+  This is the protocol basis for P2 table commitment: table committed once globally,
+  witness side committed once per batch, PoW drops an order of magnitude at security 90.
+
 ## Phases
 - P0: this document.
 - P1: store-free fractional-sumcheck core (logup_gkr.rs) + leaf claims.
