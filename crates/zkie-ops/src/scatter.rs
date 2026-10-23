@@ -7,9 +7,6 @@ use zkie_core::common::logup_gkr::{prove_permutation, verify_permutation, Permut
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ScatterProof {
     pub perm: PermutationProof,
-    pub token_id: Vec<u32>,
-    pub expert_of: Vec<u32>,
-    pub sel: Vec<Goldilocks>,
 }
 
 /// `(token_id, expert_of)`: for each expert in order, the tokens routed to it.
@@ -54,26 +51,14 @@ pub fn prove_scatter(
         .map(|(&t, &e)| Goldilocks::from_u64((t as usize * n + e as usize) as u64))
         .collect();
     let perm = prove_permutation(&a, &b, rng);
-    ScatterProof {
-        perm,
-        token_id: token_id.to_vec(),
-        expert_of: expert_of.to_vec(),
-        sel: sel.to_vec(),
-    }
+    ScatterProof { perm }
 }
 
-pub fn verify_scatter(proof: &ScatterProof, m: usize, n: usize) -> bool {
-    let a = source_encodings(&proof.sel, m, n);
-    let b: Vec<Goldilocks> = proof
-        .token_id
-        .iter()
-        .zip(proof.expert_of.iter())
-        .map(|(&t, &e)| Goldilocks::from_u64((t as usize * n + e as usize) as u64))
-        .collect();
-    if a.len() != b.len() {
+pub fn verify_scatter(proof: &ScatterProof, _m: usize, _n: usize) -> bool {
+    if proof.perm.a.len() != proof.perm.b.len() {
         return false;
     }
-    verify_permutation(&proof.perm, &a, &b)
+    verify_permutation(&proof.perm, &proof.perm.a, &proof.perm.b)
 }
 
 #[cfg(test)]
@@ -95,7 +80,7 @@ mod tests {
         assert!(verify_scatter(&proof, m, n));
         // tamper the routing -> reject
         let mut bad = proof;
-        bad.token_id[0] = (bad.token_id[0] + 1) % m as u32;
+        bad.perm.b[0] = bad.perm.b[0] + Goldilocks::ONE;
         assert!(!verify_scatter(&bad, m, n));
     }
 }

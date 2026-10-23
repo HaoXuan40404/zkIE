@@ -799,6 +799,8 @@ mod tests {
 pub struct PermutationProof {
     pub frac: FractionalProof,
     pub alpha: Goldilocks,
+    pub a: Vec<Goldilocks>,
+    pub b: Vec<Goldilocks>,
 }
 
 pub fn prove_permutation(
@@ -823,6 +825,8 @@ pub fn prove_permutation(
     PermutationProof {
         frac: prove_fractional(num, den, rng),
         alpha,
+        a: a.to_vec(),
+        b: b.to_vec(),
     }
 }
 
