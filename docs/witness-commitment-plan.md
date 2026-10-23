@@ -46,6 +46,12 @@ final_evals (no num/den rebuild), then checks the inter-layer MLE folding so
 next_num_{k-1} and num_low_k/num_high_k agree. The remaining soundness gap is
 the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 
+## Progress log
+
+- Lookup op migrated to chained store-free verify (drop indices/values). GPT-2
+  seq16: argmax 16/16, verify 21.5s -> 2.34s, Lookup proof 9.8MB -> 221KB,
+  total proof 100.9MB -> 91.4MB. Remaining big heads: Argmax 50MB, Projection 35MB.
+
 ## Phases
 - P0: this document.
 - P1: store-free fractional-sumcheck core (logup_gkr.rs) + leaf claims.
