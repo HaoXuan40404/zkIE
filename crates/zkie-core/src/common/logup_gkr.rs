@@ -231,6 +231,18 @@ pub fn lookup_multiplicity(x: &[u32], t: usize) -> Vec<u64> {
     m
 }
 
+// Merge multiplicities from several lookups into one table-side multiplicity
+// column, for committing a table + global multiplicity once (DeepProve table side).
+pub fn merge_multiplicity(xs: &[&[u32]], t: usize) -> Vec<u64> {
+    let mut m = vec![0u64; t];
+    for x in xs {
+        for &i in *x {
+            m[i as usize] += 1;
+        }
+    }
+    m
+}
+
 pub fn build_lookup_witness_num_den(
     x: &[u32],
     y: &[Goldilocks],
@@ -599,6 +611,19 @@ mod tests {
         let witness = prove_lookup_witness(&x, &y, alpha, beta, &mut rng);
         let table_proof = prove_lookup_table(&m, &table, alpha, beta, &mut rng);
         assert!(verify_lookup_split(&witness, &table_proof));
+    }
+    #[test]
+    fn merge_multiplicity_accumulates() {
+        let t = 8usize;
+        let xs: Vec<Vec<u32>> = vec![vec![0, 1, 0], vec![1, 0, 2], vec![0]];
+        let refs: Vec<&[u32]> = xs.iter().map(|v| v.as_slice()).collect();
+        let m = merge_multiplicity(&refs, t);
+        assert_eq!(m[0], 4);
+        assert_eq!(m[1], 2);
+        assert_eq!(m[2], 1);
+        for j in 3..t {
+            assert_eq!(m[j], 0);
+        }
     }
     #[test]
     fn lookup_table_commit_open_matches_leaf() {
