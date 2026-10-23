@@ -393,6 +393,36 @@ mod tests {
         ));
     }
     #[test]
+    fn fractional_leaf_matches_direct_eval() {
+        let mut rng = XorShift64::new(0x1EAF);
+        let n = 64usize;
+        let t = 16usize;
+        let table: Vec<Goldilocks> = (0..t).map(|_| rng.field()).collect();
+        let x: Vec<u32> = (0..n).map(|_| (rng.next_u64() % t as u64) as u32).collect();
+        let y: Vec<Goldilocks> = x.iter().map(|&i| table[i as usize]).collect();
+        let alpha = rng.field();
+        let beta = rng.field();
+        let proof = prove_lookup_fractional(&x, &y, &table, alpha, beta, &mut rng);
+        let total = (n + t).next_power_of_two();
+        let mut num = vec![Goldilocks::from_u64(0); total];
+        let mut den = vec![Goldilocks::from_u64(1); total];
+        for i in 0..n {
+            num[i] = Goldilocks::from_u64(1);
+            den[i] = alpha + Goldilocks::from_u64(x[i] as u64) + beta * y[i];
+        }
+        let mut m = vec![0u64; t];
+        for &i in &x {
+            m[i as usize] += 1;
+        }
+        for j in 0..t {
+            num[n + j] = from_i64(-(m[j] as i64));
+            den[n + j] = alpha + Goldilocks::from_u64(j as u64) + beta * table[j];
+        }
+        let (full_r, num_leaf, den_leaf) = fractional_leaf(&proof);
+        assert_eq!(num_leaf, crate::common::mle::eval(&num, &full_r));
+        assert_eq!(den_leaf, crate::common::mle::eval(&den, &full_r));
+    }
+    #[test]
     fn committed_lookup_roundtrip() {
         use crate::pcs::committed::commit;
         use crate::pcs::whir::Whir;
