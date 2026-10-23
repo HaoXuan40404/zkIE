@@ -27,14 +27,9 @@ pub struct RmsNormProof {
     pub trunc: VirtualProof,
     pub out: VirtualProof,
     pub rem_split: VirtualProof,
-    pub rem_range: FractionalProof,
     pub trunc_ch: Vec<Goldilocks>,
     pub r_out: Vec<Goldilocks>,
     pub rem_split_ch: Vec<Goldilocks>,
-    pub alpha_r: Goldilocks,
-    pub beta_r: Goldilocks,
-    pub rem_lo: Vec<Goldilocks>,
-    pub rem_hi: Vec<Goldilocks>,
 }
 
 #[allow(clippy::type_complexity)]
@@ -103,7 +98,7 @@ pub fn prove_rms_norm(
     d: usize,
     n_real: usize,
     rng: &mut impl ChallengeSource,
-) -> (RmsNormProof, Vec<u32>, Vec<Goldilocks>) {
+) -> (RmsNormProof, Vec<u32>, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>) {
     let (ms, s_index, rstd, out, rem_out, rem_lo, rem_hi, sum_sq, rem_s) =
         rms_norm_forward(x, w, rsqrt_table, m, d, n_real);
 
@@ -162,38 +157,19 @@ pub fn prove_rms_norm(
         Goldilocks::ZERO,
         &rem_split_ch,
     );
-    let limb_table: Vec<Goldilocks> = (0..(1usize << 16))
-        .map(|j| Goldilocks::from_u64(j as u64))
-        .collect();
-    let idx_lo: Vec<u32> = rem_lo.iter().map(|&v| to_i32(v) as u32).collect();
-    let idx_hi: Vec<u32> = rem_hi.iter().map(|&v| to_i32(v) as u32).collect();
-    let alpha_r = rng.field();
-    let beta_r = rng.field();
-    let rem_range = prove_lookup_fractional_batch(
-        &[&idx_lo, &idx_hi],
-        &[&rem_lo, &rem_hi],
-        &limb_table,
-        alpha_r,
-        beta_r,
-        rng,
-    );
-
     (
         RmsNormProof {
             trunc: trunc_proof,
             out: out_proof,
             rem_split,
-            rem_range,
             trunc_ch,
             r_out,
             rem_split_ch,
-            alpha_r,
-            beta_r,
-            rem_lo,
-            rem_hi,
         },
         s_index,
         rstd,
+        rem_lo,
+        rem_hi,
     )
 }
 
@@ -248,19 +224,7 @@ pub fn verify_rms_norm(proof: &RmsNormProof, n_real: usize) -> bool {
     ) {
         return false;
     }
-    let limb_table: Vec<Goldilocks> = (0..(1usize << 16))
-        .map(|j| Goldilocks::from_u64(j as u64))
-        .collect();
-    let idx_lo: Vec<u32> = proof.rem_lo.iter().map(|&v| to_i32(v) as u32).collect();
-    let idx_hi: Vec<u32> = proof.rem_hi.iter().map(|&v| to_i32(v) as u32).collect();
-    verify_lookup_fractional_batch(
-        &proof.rem_range,
-        &[&idx_lo, &idx_hi],
-        &[&proof.rem_lo, &proof.rem_hi],
-        &limb_table,
-        proof.alpha_r,
-        proof.beta_r,
-    )
+    true
 }
 
 #[cfg(test)]
@@ -278,7 +242,7 @@ mod tests {
         let rsqrt_table: Vec<Goldilocks> = (0..64).map(|_| from_i64(65536)).collect();
         let (ms, _s_index, _rstd, out, _rem_out, _rem_lo, _rem_hi, _sum_sq, _rem_s) =
             rms_norm_forward(&x, &w, &rsqrt_table, m, d, n_real);
-        let (proof, _ridx, _rvals) = prove_rms_norm(&x, &w, &rsqrt_table, m, d, n_real, &mut rng);
+        let (proof, _ridx, _rvals, _rem_lo, _rem_hi) = prove_rms_norm(&x, &w, &rsqrt_table, m, d, n_real, &mut rng);
         assert!(verify_rms_norm(&proof, n_real));
         assert_eq!(ms.len(), m);
         assert_eq!(out.len(), m * d);

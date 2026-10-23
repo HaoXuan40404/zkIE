@@ -66,6 +66,7 @@ fn build_layer(
     exp_t: usize,
     gelu_t: usize,
     rsqrt_t: usize,
+    limb_t: usize,
     mask_t: usize,
     cos_t: usize,
     sin_t: usize,
@@ -93,6 +94,7 @@ fn build_layer(
         w: in_norm_t,
         out: h,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m,
         d: H_PAD,
         n_real: H,
@@ -138,6 +140,7 @@ fn build_layer(
         w: k_norm_t,
         out: kn,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m,
         d: HDIM,
         n_real: HDIM,
@@ -203,6 +206,7 @@ fn build_layer(
             w: q_norm_t,
             out: qn,
             rsqrt_table: rsqrt_t,
+            limb_table: limb_t,
             m,
             d: HDIM,
             n_real: HDIM,
@@ -299,6 +303,7 @@ fn build_layer(
         w: post_attn_t,
         out: attn_norm,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m,
         d: H_PAD,
         n_real: H,
@@ -318,6 +323,7 @@ fn build_layer(
         w: pre_ffn_t,
         out: h2,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m,
         d: H_PAD,
         n_real: H,
@@ -395,6 +401,7 @@ fn build_layer(
         w: post_ffn_t,
         out: down_norm,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m,
         d: H_PAD,
         n_real: H,
@@ -446,6 +453,7 @@ pub fn build_gemma3(
     let x0_t = token_emb;
     let exp_t = store.push(exp_table);
     let rsqrt_t = store.push(rsqrt_table);
+    let limb_t = store.push((0..(1usize << 16)).map(|j| Goldilocks::from_u64(j as u64)).collect::<Vec<_>>());
     let gelu_t = store.push(gelu_table);
     let mask_t = store.push(causal_mask(m));
     let cos_local_t = store.push(cos_local);
@@ -461,7 +469,7 @@ pub fn build_gemma3(
             (cos_local_t, sin_local_t)
         };
         x_cur = build_layer(
-            store, ops, x_cur, layer, m, shift, exp_t, gelu_t, rsqrt_t, mask_t, cos_t, sin_t,
+            store, ops, x_cur, layer, m, shift, exp_t, gelu_t, rsqrt_t, limb_t, mask_t, cos_t, sin_t,
         );
     }
 
@@ -472,6 +480,7 @@ pub fn build_gemma3(
         w: final_norm_t,
         out: h_final,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m,
         d: H_PAD,
         n_real: H,

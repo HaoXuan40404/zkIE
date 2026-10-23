@@ -26,7 +26,7 @@ use crate::softmax_scaled::{prove_softmax_rounded, verify_softmax_rounded, Softm
 use crate::topk::{argmax_forward, prove_argmax, prove_topk, topk_forward, verify_argmax, verify_topk, ArgmaxProof, TopKSelectProof};
 use rayon::prelude::*;
 use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
-use zkie_core::common::fixed_point::{from_i64, to_i64};
+use zkie_core::common::fixed_point::{from_i64, to_i32, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, prove_lookup_fractional_batch, prove_lookup_fractional_columns,
     verify_lookup_fractional, verify_lookup_fractional_batch, verify_lookup_fractional_chain,
@@ -681,6 +681,7 @@ pub enum Op {
         w: T,
         out: T,
         rsqrt_table: T,
+        limb_table: T,
         m: usize,
         d: usize,
         n_real: usize,
@@ -970,8 +971,8 @@ impl Op {
                 ..
             } => vec![x, w, b, rsqrt_table],
             Op::RmsNorm {
-                x, w, rsqrt_table, ..
-            } => vec![x, w, rsqrt_table],
+                x, w, rsqrt_table, limb_table, ..
+            } => vec![x, w, rsqrt_table, limb_table],
             Op::RoPE { x, cos, sin, .. } => vec![x, cos, sin],
             Op::TopKSelect { x, .. } => vec![x],
             Op::Argmax { x, .. } => vec![x],
@@ -1500,6 +1501,7 @@ fn forward_ops(store: &mut Store, ops: &[Op]) {
                 w,
                 out,
                 rsqrt_table,
+                limb_table,
                 m,
                 d,
                 n_real,
@@ -1887,11 +1889,12 @@ pub fn prove_shard_precomputed(
                 w,
                 out,
                 rsqrt_table,
+                limb_table,
                 m,
                 d,
                 n_real,
             } => {
-                let (p, ridx, rvals) = prove_rms_norm(
+                let (p, ridx, rvals, rem_lo, rem_hi) = prove_rms_norm(
                     store.get(x),
                     store.get(w),
                     store.get(rsqrt_table),
@@ -1904,6 +1907,16 @@ pub fn prove_shard_precomputed(
                     .entry(rsqrt_table)
                     .or_insert(Vec::new())
                     .push((ridx, rvals));
+                let idx_lo: Vec<u32> = rem_lo.iter().map(|&v| to_i32(v) as u32).collect();
+                let idx_hi: Vec<u32> = rem_hi.iter().map(|&v| to_i32(v) as u32).collect();
+                lookup_by_table
+                    .entry(limb_table)
+                    .or_insert(Vec::new())
+                    .push((idx_lo, rem_lo));
+                lookup_by_table
+                    .entry(limb_table)
+                    .or_insert(Vec::new())
+                    .push((idx_hi, rem_hi));
                 claims.push((out, p.r_out.clone(), mle::eval(store.get(out), &p.r_out)));
                 claims.push((w, p.r_out.clone(), mle::eval(store.get(w), &p.r_out)));
                 op_proofs.push(OpProof::RmsNorm(p));

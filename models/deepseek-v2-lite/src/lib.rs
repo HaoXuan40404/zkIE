@@ -69,6 +69,7 @@ fn build_attention(
     shift: u32,
     exp_t: usize,
     rsqrt_t: usize,
+    limb_t: usize,
     mask_t: usize,
     cos_t: usize,
     sin_t: usize,
@@ -121,6 +122,7 @@ fn build_attention(
         w: kva_ln_t,
         out: kvlora_n,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m,
         d: KV_LORA,
         n_real: KV_LORA,
@@ -612,6 +614,7 @@ pub fn build_deepseek(
     let x0_t = token_emb;
     let exp_t = store.push(exp_table);
     let rsqrt_t = store.push(rsqrt_table);
+    let limb_t = store.push((0..(1usize << 16)).map(|j| Goldilocks::from_u64(j as u64)).collect::<Vec<_>>());
     let silu_t = store.push(silu_table);
     let mask_t = store.push(causal_mask(m));
     let cos_t = store.push(cos);
@@ -629,12 +632,13 @@ pub fn build_deepseek(
             w: in_norm_t,
             out: h,
             rsqrt_table: rsqrt_t,
+            limb_table: limb_t,
             m,
             d: H,
             n_real: H,
         });
         let attn = build_attention(
-            store, ops, h, layer, m, shift, exp_t, rsqrt_t, mask_t, cos_t, sin_t,
+            store, ops, h, layer, m, shift, exp_t, rsqrt_t, limb_t, mask_t, cos_t, sin_t,
         );
         let x2 = store.push(vec![]);
         ops.push(Op::Add {
@@ -649,6 +653,7 @@ pub fn build_deepseek(
             w: post_norm_t,
             out: h2,
             rsqrt_table: rsqrt_t,
+            limb_table: limb_t,
             m,
             d: H,
             n_real: H,
@@ -674,6 +679,7 @@ pub fn build_deepseek(
         w: final_norm_t,
         out: h_final,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m,
         d: H,
         n_real: H,
