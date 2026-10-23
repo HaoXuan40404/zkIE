@@ -78,6 +78,14 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
   This is the protocol basis for P2 table commitment: table committed once globally,
   witness side committed once per batch, PoW drops an order of magnitude at security 90.
 
+## Progress log
+
+- Lookup/TopK/Argmax/Projection plaintext witness removed; proof 100.9MB -> 22.8MB, verify 21.5s -> 2.11s.
+- Lookup witness commit + opening (per-column) sound: argmax 16/16, prove 128s / rss 38GB.
+- Split LogUp protocol (witness/table sides) + two-phase collection landed: table side committed once,
+  witness side batched. GPT-2 seq16: prove 128s -> 36.4s, rss 38GB -> 15.6GB, argmax 16/16.
+  This is the P2 table-commitment PoW win, at security 90, without changing soundness.
+
 ## Phases
 - P0: this document.
 - P1: store-free fractional-sumcheck core (logup_gkr.rs) + leaf claims.
