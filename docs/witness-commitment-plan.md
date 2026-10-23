@@ -109,3 +109,5 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 - Argmax one-hot sel committed + opened at the m claimed output positions (sel_evals in ArgmaxProof, topk.sel cleared). GPT-2 seq16: argmax 16/16, proof 24.3MB -> 18.0MB, prove ~84s, verify 2.32s.
 
 - Softmax migrated: softmax-exp table committed, softmax lookup moved into split witness/table path, indices/e plaintext dropped. GPT-2 seq16: argmax 16/16, prove ~87.8s, verify 2.15s, proof 18.0MB -> 21.9MB (table body commitment cost).
+
+- LayerNormCentered migrated: rsqrt table committed, rsqrt lookup moved into split path, s_index/rstd_vals plaintext dropped. Also padded tiny witnesses to >=2^5 (WHIR folding factor 5 needs arity>=5). GPT-2 seq16: argmax 16/16, prove ~104.7s, verify 2.15s -> 0.96s, proof ~24.9MB.
