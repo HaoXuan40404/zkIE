@@ -30,7 +30,7 @@ use zkie_core::common::fixed_point::{from_i64, to_i32, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, prove_lookup_fractional_batch, prove_lookup_fractional_columns,
     verify_lookup_fractional, verify_lookup_fractional_batch, verify_lookup_fractional_chain,
-    build_lookup_table_num_den, fractional_leaf, merge_multiplicity, pad_table,
+    build_lookup_table_num_den, build_perm_num_den, fractional_leaf, merge_multiplicity, pad_table,
     prove_fractional_with_challenges, prove_lookup_table, prove_lookup_witness_batch_columns,
     verify_lookup_split, FractionalProof,
 };
@@ -2679,6 +2679,27 @@ pub struct SelOpening {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+pub struct PermOpening {
+    pub commitment_a: zkie_core::pcs::whir::Commitment,
+    pub commitment_b: zkie_core::pcs::whir::Commitment,
+    pub commitment_num: zkie_core::pcs::whir::Commitment,
+    pub opening_a: zkie_core::pcs::whir::Proof,
+    pub opening_b: zkie_core::pcs::whir::Proof,
+    pub opening_num_a: zkie_core::pcs::whir::Proof,
+    pub opening_num_b: zkie_core::pcs::whir::Proof,
+    pub arity: usize,
+    pub point_a: Vec<Goldilocks>,
+    pub point_b: Vec<Goldilocks>,
+    pub eval_a: Goldilocks,
+    pub eval_b: Goldilocks,
+    pub num_leaf_a: Goldilocks,
+    pub num_leaf_b: Goldilocks,
+    pub den_leaf_a: Goldilocks,
+    pub den_leaf_b: Goldilocks,
+    pub alpha: Goldilocks,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct CommittedShardDagProof {
     pub shards: Vec<OpShardProof>,
     pub boundary_tensors: Vec<T>,
@@ -2692,6 +2713,7 @@ pub struct CommittedShardDagProof {
     pub witness_openings: Vec<WitnessOpening>,
     pub table_openings: Vec<TableOpening>,
     pub sel_openings: Vec<SelOpening>,
+    pub perm_openings: Vec<PermOpening>,
 }
 
 pub fn prove_committed_shard_dag(
@@ -3045,6 +3067,79 @@ pub fn prove_committed_shard_dag(
         }
     }
 
+    // Commit + open each Scatter permutation witness (a/b columns + indicator).
+    let mut perm_openings = Vec::new();
+    let perm_ranges = shard_ranges(ops.len(), ops_per_shard);
+    for (si, &(s, e)) in perm_ranges.iter().enumerate() {
+        for (op, op_proof) in ops[s..e].iter().zip(shards[si].ops.iter_mut()) {
+            if let (Op::Scatter { .. }, OpProof::Scatter(sp)) = (op, op_proof) {
+                let n_entries = sp.perm.a.len();
+                let arity = n_entries.next_power_of_two().max(32).trailing_zeros() as usize;
+                let total = 1usize << arity;
+                let mut a_pad = vec![Goldilocks::ZERO; total];
+                let mut b_pad = vec![Goldilocks::ZERO; total];
+                let mut num_pad = vec![Goldilocks::ZERO; total];
+                for i in 0..n_entries {
+                    a_pad[i] = sp.perm.a[i];
+                    b_pad[i] = sp.perm.b[i];
+                    num_pad[i] = Goldilocks::ONE;
+                }
+                let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
+                let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+                let c_a = zkie_core::pcs::committed::commit(&bw, &a_pad);
+                let c_b = zkie_core::pcs::committed::commit(&bw, &b_pad);
+                let c_num = zkie_core::pcs::committed::commit(&bw, &num_pad);
+                let mut ts = Transcript::new(b"zkie-committed-perm-v1");
+                absorb_statement(&mut ts, ops, ops_per_shard);
+                ts.absorb_u64(si as u64);
+                ts.absorb(&bincode::serialize(&c_a.commitment).unwrap());
+                ts.absorb(&bincode::serialize(&c_b.commitment).unwrap());
+                ts.absorb(&bincode::serialize(&c_num.commitment).unwrap());
+                let alpha = ts.field();
+                let (num_a, den_a) = build_perm_num_den(&sp.perm.a, alpha);
+                let (num_b, den_b) = build_perm_num_den(&sp.perm.b, alpha);
+                let full_r_a = ts.field_vec(arity);
+                let cs_a = ts.field_vec(arity);
+                let full_r_b = ts.field_vec(arity);
+                let cs_b = ts.field_vec(arity);
+                let new_a = prove_fractional_with_challenges(num_a, den_a, &full_r_a, &cs_a);
+                let new_b = prove_fractional_with_challenges(num_b, den_b, &full_r_b, &cs_b);
+                let (point_a, num_leaf_a, den_leaf_a) = fractional_leaf(&new_a);
+                let (point_b, num_leaf_b, den_leaf_b) = fractional_leaf(&new_b);
+                let (open_a, ev_a) = bw.open(c_a.prover_data.clone(), &c_a.protocol, &point_a);
+                let (open_b, ev_b) = bw.open(c_b.prover_data.clone(), &c_b.protocol, &point_b);
+                let (open_num_a, ev_num_a) = bw.open(c_num.prover_data.clone(), &c_num.protocol, &point_a);
+                let (open_num_b, ev_num_b) = bw.open(c_num.prover_data.clone(), &c_num.protocol, &point_b);
+                assert_eq!(ev_num_a, num_leaf_a);
+                assert_eq!(ev_num_b, num_leaf_b);
+                sp.perm.a_side = new_a;
+                sp.perm.b_side = new_b;
+                sp.perm.alpha = alpha;
+                sp.perm.a.clear();
+                sp.perm.b.clear();
+                perm_openings.push(PermOpening {
+                    commitment_a: c_a.commitment,
+                    commitment_b: c_b.commitment,
+                    commitment_num: c_num.commitment,
+                    opening_a: open_a,
+                    opening_b: open_b,
+                    opening_num_a: open_num_a,
+                    opening_num_b: open_num_b,
+                    arity,
+                    point_a,
+                    point_b,
+                    eval_a: ev_a,
+                    eval_b: ev_b,
+                    num_leaf_a,
+                    num_leaf_b,
+                    den_leaf_a,
+                    den_leaf_b,
+                    alpha,
+                });
+            }
+        }
+    }
+
     CommittedShardDagProof {
         shards,
         boundary_tensors,
@@ -3058,6 +3153,7 @@ pub fn prove_committed_shard_dag(
         witness_openings,
         table_openings,
         sel_openings,
+        perm_openings,
     }
 }
 
@@ -3180,6 +3276,29 @@ pub fn verify_committed_shard_dag(
             }
         }
     }
+    for po in &proof.perm_openings {
+        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(po.arity, 90);
+        let bw = zkie_core::pcs::whir::Whir::with_params(po.arity, 90, pow_bits);
+        let protocol = bw.opening_protocol(po.arity, 1);
+        if bw.verify(&po.commitment_a, &po.opening_a, &protocol, &po.point_a).ok() != Some(po.eval_a) {
+            return false;
+        }
+        if bw.verify(&po.commitment_b, &po.opening_b, &protocol, &po.point_b).ok() != Some(po.eval_b) {
+            return false;
+        }
+        if bw.verify(&po.commitment_num, &po.opening_num_a, &protocol, &po.point_a).ok() != Some(po.num_leaf_a) {
+            return false;
+        }
+        if bw.verify(&po.commitment_num, &po.opening_num_b, &protocol, &po.point_b).ok() != Some(po.num_leaf_b) {
+            return false;
+        }
+        if po.den_leaf_a != po.alpha - po.eval_a {
+            return false;
+        }
+        if po.den_leaf_b != po.alpha - po.eval_b {
+            return false;
+        }
+    }
 
     // Fiat-Shamir: reconstruct the transcript from the commitment roots,
     // derive alpha/beta and the fractional challenges, and verify the prover
@@ -3246,6 +3365,50 @@ pub fn verify_committed_shard_dag(
                     if layer.c != c {
                         return false;
                     }
+                }
+            }
+        }
+    }
+
+    // Fiat-Shamir for permutations: verify alpha/full_r/c are transcript-derived.
+    {
+        let mut pi = 0usize;
+        let pr = shard_ranges(ops.len(), ops_per_shard);
+        for (si, &(s, e)) in pr.iter().enumerate() {
+            for (op, op_proof) in ops[s..e].iter().zip(proof.shards[si].ops.iter()) {
+                if let (Op::Scatter { .. }, OpProof::Scatter(sp)) = (op, op_proof) {
+                    let po = &proof.perm_openings[pi];
+                    let mut ts = Transcript::new(b"zkie-committed-perm-v1");
+                    absorb_statement(&mut ts, ops, ops_per_shard);
+                    ts.absorb_u64(si as u64);
+                    ts.absorb(&bincode::serialize(&po.commitment_a).unwrap());
+                    ts.absorb(&bincode::serialize(&po.commitment_b).unwrap());
+                    ts.absorb(&bincode::serialize(&po.commitment_num).unwrap());
+                    let alpha = ts.field();
+                    if alpha != po.alpha || alpha != sp.perm.alpha {
+                        return false;
+                    }
+                    let full_r_a = ts.field_vec(po.arity);
+                    let cs_a = ts.field_vec(po.arity);
+                    let full_r_b = ts.field_vec(po.arity);
+                    let cs_b = ts.field_vec(po.arity);
+                    if sp.perm.a_side.full_r != full_r_a || sp.perm.a_side.layers.len() != cs_a.len() {
+                        return false;
+                    }
+                    for (layer, &c) in sp.perm.a_side.layers.iter().zip(cs_a.iter()) {
+                        if layer.c != c {
+                            return false;
+                        }
+                    }
+                    if sp.perm.b_side.full_r != full_r_b || sp.perm.b_side.layers.len() != cs_b.len() {
+                        return false;
+                    }
+                    for (layer, &c) in sp.perm.b_side.layers.iter().zip(cs_b.iter()) {
+                        if layer.c != c {
+                            return false;
+                        }
+                    }
+                    pi += 1;
                 }
             }
         }
