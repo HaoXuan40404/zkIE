@@ -896,6 +896,18 @@ pub struct WitnessColumn {
     pub point: Vec<Goldilocks>,
     pub num_leaf: Goldilocks,
     pub den_leaf: Goldilocks,
+    pub table: T,
+}
+
+/// A lookup table side (table tensor + global multiplicity) opened at its leaf
+/// point, committed once per table globally in the committed path.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TableColumn {
+    pub table: T,
+    pub m: Vec<u64>,
+    pub point: Vec<Goldilocks>,
+    pub num_leaf: Goldilocks,
+    pub den_leaf: Goldilocks,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -916,6 +928,7 @@ pub struct OpShardProof {
     /// the shard-DAG composer for cross-shard binding.
     pub claims: Vec<(T, Vec<Goldilocks>, Goldilocks)>,
     pub witness_columns: Vec<WitnessColumn>,
+    pub table_columns: Vec<TableColumn>,
 }
 
 /// Run the forward pass for all ops; materializes every `out`/`rem`/`c` into the
@@ -1786,6 +1799,7 @@ pub fn prove_shard_precomputed(
                     point,
                     num_leaf,
                     den_leaf,
+                    table,
                 });
                 op_proofs.push(OpProof::Lookup(p));
             }
@@ -2046,6 +2060,7 @@ pub fn prove_shard_precomputed(
         binds,
         claims: raw_claims,
         witness_columns,
+        table_columns: Vec::new(),
     }
 }
 
