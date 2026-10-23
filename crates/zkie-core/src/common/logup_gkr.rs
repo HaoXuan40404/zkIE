@@ -288,6 +288,32 @@ pub fn prove_lookup_witness(
     prove_fractional(num, den, rng)
 }
 
+// Batch several lookups (same table) into one witness-side fractional sumcheck.
+// The witness side is committed once per batch; the table side is committed once
+// globally. Linked together this is the DeepProve-style split LogUp.
+pub fn prove_lookup_witness_batch(
+    xs: &[&[u32]],
+    ys: &[&[Goldilocks]],
+    alpha: Goldilocks,
+    beta: Goldilocks,
+    rng: &mut impl ChallengeSource,
+) -> FractionalProof {
+    assert_eq!(xs.len(), ys.len());
+    let n: usize = xs.iter().map(|x| x.len()).sum();
+    let total = n.next_power_of_two();
+    let mut num = vec![Goldilocks::from_u64(0); total];
+    let mut den = vec![Goldilocks::from_u64(1); total];
+    let mut pos = 0usize;
+    for (x, y) in xs.iter().zip(ys.iter()) {
+        for i in 0..x.len() {
+            num[pos] = Goldilocks::from_u64(1);
+            den[pos] = alpha + Goldilocks::from_u64(x[i] as u64) + beta * y[i];
+            pos += 1;
+        }
+    }
+    prove_fractional(num, den, rng)
+}
+
 pub fn prove_lookup_table(
     m: &[u64],
     table: &[Goldilocks],
@@ -609,6 +635,29 @@ mod tests {
         assert!(verify_lookup_fractional(&merged, &x, &y, &table, alpha, beta));
         let m = lookup_multiplicity(&x, t);
         let witness = prove_lookup_witness(&x, &y, alpha, beta, &mut rng);
+        let table_proof = prove_lookup_table(&m, &table, alpha, beta, &mut rng);
+        assert!(verify_lookup_split(&witness, &table_proof));
+    }
+    #[test]
+    fn split_batch_matches_merged_batch() {
+        let mut rng = XorShift64::new(0xB47C4);
+        let t = 64usize;
+        let table: Vec<Goldilocks> = (0..t).map(|_| rng.field()).collect();
+        let xs: Vec<Vec<u32>> = (0..4)
+            .map(|_| (0..16).map(|_| (rng.next_u64() % t as u64) as u32).collect())
+            .collect();
+        let ys: Vec<Vec<Goldilocks>> = xs
+            .iter()
+            .map(|x| x.iter().map(|&i| table[i as usize]).collect())
+            .collect();
+        let alpha = rng.field();
+        let beta = rng.field();
+        let xrefs: Vec<&[u32]> = xs.iter().map(|v| v.as_slice()).collect();
+        let yrefs: Vec<&[Goldilocks]> = ys.iter().map(|v| v.as_slice()).collect();
+        let merged = prove_lookup_fractional_batch(&xrefs, &yrefs, &table, alpha, beta, &mut rng);
+        assert!(verify_lookup_fractional_batch(&merged, &xrefs, &yrefs, &table, alpha, beta));
+        let m = merge_multiplicity(&xrefs, t);
+        let witness = prove_lookup_witness_batch(&xrefs, &yrefs, alpha, beta, &mut rng);
         let table_proof = prove_lookup_table(&m, &table, alpha, beta, &mut rng);
         assert!(verify_lookup_split(&witness, &table_proof));
     }
