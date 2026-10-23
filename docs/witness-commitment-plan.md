@@ -117,3 +117,5 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 - Table body commitment made global-once (not per shard): each distinct lookup table committed once, openings per shard. GPT-2 seq16: argmax 16/16, prove 104.7s -> 101.1s, proof ~24.9MB.
 
 - Range checks migrated: RmsNorm rem_lo/rem_hi and RoPE rem_f/rem_s committed (limb identity table 2^16 added to store, witness added to lookup_by_table). Verifier no longer regenerates the range table (succinct). gemma3/deepseek builders push limb_t.
+
+- MoE Scatter permutation committed: PermutationProof split into a/b fractional sides, witness a/b/num committed and opened at both leaf points, alpha Fiat-Shamir bound. deepseek compiles, 48 tests green.
