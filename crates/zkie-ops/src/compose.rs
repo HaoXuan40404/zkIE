@@ -909,6 +909,8 @@ pub struct WitnessColumn {
     pub point: Vec<Goldilocks>,
     pub num_leaf: Goldilocks,
     pub den_leaf: Goldilocks,
+    pub alpha: Goldilocks,
+    pub beta: Goldilocks,
     pub table: T,
 }
 
@@ -2065,6 +2067,8 @@ pub fn prove_shard_precomputed(
             point,
             num_leaf,
             den_leaf,
+            alpha,
+            beta,
             table: *table,
         });
         table_columns.push(TableColumn {
@@ -2660,22 +2664,38 @@ pub struct TableOpening {
     pub den_leaf: Goldilocks,
 }
 
+/// Verifier-side witness batch commitment: one root for a group of same-arity
+/// witness columns of one type (x, y, or num). The opening protocol is rebuilt
+/// from `arity`/`num_tables`; the batch Whir carries the public parameters.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct WitnessOpening {
-    pub commitment_x: zkie_core::pcs::whir::Commitment,
-    pub commitment_y: zkie_core::pcs::whir::Commitment,
-    pub commitment_num: zkie_core::pcs::whir::Commitment,
-    pub opening_x: zkie_core::pcs::whir::Proof,
-    pub opening_y: zkie_core::pcs::whir::Proof,
-    pub opening_num: zkie_core::pcs::whir::Proof,
+pub struct WitnessBatchCommit {
+    pub commitment: zkie_core::pcs::whir::Commitment,
     pub arity: usize,
-    pub point: Vec<Goldilocks>,
-    pub num_leaf: Goldilocks,
-    pub den_leaf: Goldilocks,
-    pub eval_x: Goldilocks,
-    pub eval_y: Goldilocks,
-    pub alpha: Goldilocks,
-    pub beta: Goldilocks,
+    pub num_tables: usize,
+    pub whir: zkie_core::pcs::whir::Whir,
+}
+
+/// One vertical batch opening for a group of same-arity witness columns of one
+/// type. `table_idxs[i]` is the table index within the batch; `points[i]` and
+/// `claimed[i]` are that column's leaf point and claimed evaluation.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct WitnessBatchOpening {
+    pub table_idxs: Vec<usize>,
+    pub points: Vec<Vec<Goldilocks>>,
+    pub claimed: Vec<Goldilocks>,
+    pub proof: zkie_core::pcs::batch_open::BatchOpeningProof,
+}
+
+/// Batch/table coordinates of one witness column's x/y/num openings, in the
+/// same global order the columns appear across `shards`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct WitnessColumnLocation {
+    pub x_batch: usize,
+    pub x_table: usize,
+    pub y_batch: usize,
+    pub y_table: usize,
+    pub num_batch: usize,
+    pub num_table: usize,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2755,7 +2775,9 @@ pub struct CommittedShardDagProof {
     pub weight_locs: std::collections::BTreeMap<T, (usize, usize)>,
     pub tokens: Vec<u32>,
     pub argmax_t: Vec<u32>,
-    pub witness_openings: Vec<WitnessOpening>,
+    pub witness_batches: Vec<WitnessBatchCommit>,
+    pub witness_batch_openings: Vec<WitnessBatchOpening>,
+    pub witness_locations: Vec<WitnessColumnLocation>,
     pub table_openings: Vec<TableOpening>,
     pub sel_openings: Vec<SelOpening>,
     pub perm_openings: Vec<PermOpening>,
@@ -2893,14 +2915,33 @@ pub fn prove_committed_shard_dag(
         });
     }
 
-    // Commit + open each lookup witness column pair at its leaf point, then
-    // drop the plaintext columns so the final proof carries only roots + openings.
+    // Vertical batch the witness columns across all shards: group the x/y/num
+    // columns by arity, committing each (arity, column-type) group once. This
+    // turns ~3*W single openings into 3*G batch openings (G distinct arities).
     let mut shards = plain.shards;
-    let mut witness_openings = Vec::new();
+    let mut witness_batches: Vec<WitnessBatchCommit> = Vec::new();
+    let mut witness_batch_openings: Vec<WitnessBatchOpening> = Vec::new();
     let mut table_openings = Vec::new();
 
-    // Commit each distinct lookup table body exactly once (not per shard):
-    // the table is a global public parameter, only its openings are per-shard.
+    let mut shard_wc_off: Vec<usize> = Vec::with_capacity(shards.len() + 1);
+    shard_wc_off.push(0);
+    for shard in &shards {
+        let next = shard_wc_off.last().unwrap() + shard.witness_columns.len();
+        shard_wc_off.push(next);
+    }
+    let total_wc = *shard_wc_off.last().unwrap();
+    let mut witness_locations: Vec<WitnessColumnLocation> = (0..total_wc)
+        .map(|_| WitnessColumnLocation {
+            x_batch: 0,
+            x_table: 0,
+            y_batch: 0,
+            y_table: 0,
+            num_batch: 0,
+            num_table: 0,
+        })
+        .collect();
+
+    // Commit each distinct lookup table body exactly once (not per shard).
     let mut global_table_commits: std::collections::BTreeMap<
         T,
         (usize, zkie_core::pcs::committed::Committed),
@@ -2926,23 +2967,57 @@ pub fn prove_committed_shard_dag(
         }
     }
 
-    for (si, shard) in shards.iter_mut().enumerate() {
-        // Phase 1: commit witness x/y/num and table m/table (keep prover data).
-        let mut w_arity: Vec<usize> = Vec::new();
-        let mut w_cx: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
-        let mut w_cy: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
-        let mut w_cnum: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
-        for wc in &shard.witness_columns {
-            let arity = wc.num.len().trailing_zeros() as usize;
-            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
-            let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
-            w_arity.push(arity);
-            w_cx.push(zkie_core::pcs::committed::commit(&bw, &wc.x));
-            w_cy.push(zkie_core::pcs::committed::commit(&bw, &wc.y));
-            w_cnum.push(zkie_core::pcs::committed::commit(&bw, &wc.num));
+    struct WitnessGroup {
+        arity: usize,
+        cols: Vec<(usize, usize)>,
+        x_ctx: zkie_core::pcs::committed::BatchCtx,
+        y_ctx: zkie_core::pcs::committed::BatchCtx,
+        num_ctx: zkie_core::pcs::committed::BatchCtx,
+    }
+    let mut witness_groups: Vec<WitnessGroup> = Vec::new();
+    {
+        let mut by_arity: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
+            std::collections::BTreeMap::new();
+        for (si, shard) in shards.iter().enumerate() {
+            for (ci, wc) in shard.witness_columns.iter().enumerate() {
+                let arity = wc.num.len().trailing_zeros() as usize;
+                by_arity.entry(arity).or_default().push((si, ci));
+            }
         }
-        let mut t_arity: Vec<usize> = Vec::new();
-        let mut t_cm: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
+        for (arity, cols) in by_arity {
+            let mut xs: Vec<&[Goldilocks]> = Vec::with_capacity(cols.len());
+            let mut ys: Vec<&[Goldilocks]> = Vec::with_capacity(cols.len());
+            let mut nums: Vec<&[Goldilocks]> = Vec::with_capacity(cols.len());
+            for &(si, ci) in &cols {
+                let wc = &shards[si].witness_columns[ci];
+                xs.push(wc.x.as_slice());
+                ys.push(wc.y.as_slice());
+                nums.push(wc.num.as_slice());
+            }
+            let total_slots = cols.len() * (1usize << arity);
+            let num_vars = total_slots.next_power_of_two().trailing_zeros() as usize;
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(num_vars, 90);
+            let base_whir = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+            let num_tables = cols.len();
+            let (cx, px, prx, wx) = base_whir.commit_batch(&xs);
+            let (cy, py, pry, wy) = base_whir.commit_batch(&ys);
+            let (cnum, pnum, prnum, wnum) = base_whir.commit_batch(&nums);
+            witness_groups.push(WitnessGroup {
+                arity,
+                cols,
+                x_ctx: zkie_core::pcs::committed::BatchCtx { commitment: cx, prover_data: px, protocol: prx, whir: wx, num_tables },
+                y_ctx: zkie_core::pcs::committed::BatchCtx { commitment: cy, prover_data: py, protocol: pry, whir: wy, num_tables },
+                num_ctx: zkie_core::pcs::committed::BatchCtx { commitment: cnum, prover_data: pnum, protocol: prnum, whir: wnum, num_tables },
+            });
+        }
+    }
+
+    // Commit the per-lookup multiplicity columns `m`.
+    let mut t_arities: Vec<Vec<usize>> = Vec::with_capacity(shards.len());
+    let mut t_cms: Vec<Vec<zkie_core::pcs::committed::Committed>> = Vec::with_capacity(shards.len());
+    for shard in &shards {
+        let mut t_arity = Vec::new();
+        let mut t_cm = Vec::new();
         for tc in &shard.table_columns {
             let total = tc.m.len().next_power_of_two();
             let arity = total.trailing_zeros() as usize;
@@ -2955,20 +3030,25 @@ pub fn prove_committed_shard_dag(
             t_arity.push(arity);
             t_cm.push(zkie_core::pcs::committed::commit(&bw, &m_pad));
         }
+        t_arities.push(t_arity);
+        t_cms.push(t_cm);
+    }
 
-        // Phase 2: Fiat-Shamir transcript absorbs the statement and every
-        // commitment root, then derives alpha/beta per table and full_r/c.
-        let mut ts = Transcript::new(b"zkie-committed-frac-v1");
-        absorb_statement(&mut ts, ops, ops_per_shard);
+    // Global Fiat-Shamir transcript: absorb the statement, every witness batch
+    // root, then every table root, before deriving per-lookup alpha/beta and the
+    // chained-GKR leaf challenges.
+    let mut ts = Transcript::new(b"zkie-committed-frac-v1");
+    absorb_statement(&mut ts, ops, ops_per_shard);
+    for g in &witness_groups {
+        ts.absorb(&bincode::serialize(&g.x_ctx.commitment).unwrap());
+        ts.absorb(&bincode::serialize(&g.y_ctx.commitment).unwrap());
+        ts.absorb(&bincode::serialize(&g.num_ctx.commitment).unwrap());
+    }
+    for (si, shard) in shards.iter().enumerate() {
         ts.absorb_u64(si as u64);
-        for i in 0..w_arity.len() {
-            ts.absorb(&bincode::serialize(&w_cx[i].commitment).unwrap());
-            ts.absorb(&bincode::serialize(&w_cy[i].commitment).unwrap());
-            ts.absorb(&bincode::serialize(&w_cnum[i].commitment).unwrap());
-        }
-        for i in 0..t_arity.len() {
-            ts.absorb(&bincode::serialize(&t_cm[i].commitment).unwrap());
-            let tid = shard.table_columns[i].table;
+        for (i, tc) in shard.table_columns.iter().enumerate() {
+            ts.absorb(&bincode::serialize(&t_cms[si][i].commitment).unwrap());
+            let tid = tc.table;
             if identity_tables.contains(&tid) {
                 ts.absorb_u64(0);
             } else {
@@ -2976,27 +3056,47 @@ pub fn prove_committed_shard_dag(
                 ts.absorb(&bincode::serialize(&gc.commitment).unwrap());
             }
         }
-        let mut alphas: Vec<Goldilocks> = Vec::new();
-        let mut betas: Vec<Goldilocks> = Vec::new();
-        for _ in 0..w_arity.len() {
-            alphas.push(ts.field());
-            betas.push(ts.field());
+    }
+
+    let mut w_arities: Vec<usize> = Vec::new();
+    let mut w_alphas: Vec<Goldilocks> = Vec::new();
+    let mut w_betas: Vec<Goldilocks> = Vec::new();
+    for shard in &shards {
+        for wc in &shard.witness_columns {
+            w_arities.push(wc.num.len().trailing_zeros() as usize);
+            w_alphas.push(ts.field());
+            w_betas.push(ts.field());
         }
-        let mut w_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
-        for &a in &w_arity {
-            w_challs.push((ts.field_vec(a), ts.field_vec(a)));
-        }
-        let mut t_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
-        for &a in &t_arity {
+    }
+    let mut w_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
+    for &a in &w_arities {
+        w_challs.push((ts.field_vec(a), ts.field_vec(a)));
+    }
+    let mut t_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
+    for shard in &shards {
+        for tc in &shard.table_columns {
+            let a = tc.m.len().next_power_of_two().trailing_zeros() as usize;
             t_challs.push((ts.field_vec(a), ts.field_vec(a)));
         }
+    }
 
-        // Phase 3: re-run the chained GKR with the derived challenges and open
-        // each column at the new leaf point.
-        for (i, wc) in shard.witness_columns.iter_mut().enumerate() {
-            let (full_r, cs) = &w_challs[i];
-            let alpha = alphas[i];
-            let beta = betas[i];
+    // Re-run the chained GKR per lookup, then batch-open each (arity, type) group.
+    for (g_idx, g) in witness_groups.iter().enumerate() {
+        let num_tables = g.cols.len();
+        let table_idxs: Vec<usize> = (0..num_tables).collect();
+        let mut points: Vec<Vec<Goldilocks>> = Vec::with_capacity(num_tables);
+        let mut xs_tensors: Vec<Vec<Goldilocks>> = Vec::with_capacity(num_tables);
+        let mut ys_tensors: Vec<Vec<Goldilocks>> = Vec::with_capacity(num_tables);
+        let mut nums_tensors: Vec<Vec<Goldilocks>> = Vec::with_capacity(num_tables);
+        let mut xs_claimed: Vec<Goldilocks> = Vec::with_capacity(num_tables);
+        let mut ys_claimed: Vec<Goldilocks> = Vec::with_capacity(num_tables);
+        let mut nums_claimed: Vec<Goldilocks> = Vec::with_capacity(num_tables);
+        for (ti, &(si, ci)) in g.cols.iter().enumerate() {
+            let gid = shard_wc_off[si] + ci;
+            let (full_r, cs) = &w_challs[gid];
+            let alpha = w_alphas[gid];
+            let beta = w_betas[gid];
+            let wc = &mut shards[si].witness_columns[ci];
             let x = std::mem::take(&mut wc.x);
             let y = std::mem::take(&mut wc.y);
             let num = std::mem::take(&mut wc.num);
@@ -3005,51 +3105,99 @@ pub fn prove_committed_shard_dag(
             for j in 0..total {
                 den[j] = alpha + x[j] + beta * y[j];
             }
-            let new_proof = prove_fractional_with_challenges(num, den, full_r, cs);
+            let new_proof = prove_fractional_with_challenges(num.clone(), den, full_r, cs);
             let (point, num_leaf, den_leaf) = fractional_leaf(&new_proof);
-            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(w_arity[i], 90);
-            let bw = zkie_core::pcs::whir::Whir::with_params(w_arity[i], 90, pow_bits);
-            let (open_x, ev_x) = bw.open(w_cx[i].prover_data.clone(), &w_cx[i].protocol, &point);
-            let (open_y, ev_y) = bw.open(w_cy[i].prover_data.clone(), &w_cy[i].protocol, &point);
-            let (open_num, ev_num) = bw.open(w_cnum[i].prover_data.clone(), &w_cnum[i].protocol, &point);
-            assert_eq!(ev_num, num_leaf);
+            let eval_x = mle::eval(&x, &point);
+            let eval_y = mle::eval(&y, &point);
             wc.proof = new_proof;
             wc.point = point.clone();
             wc.num_leaf = num_leaf;
             wc.den_leaf = den_leaf;
-            witness_openings.push(WitnessOpening {
-                commitment_x: w_cx[i].commitment.clone(),
-                commitment_y: w_cy[i].commitment.clone(),
-                commitment_num: w_cnum[i].commitment.clone(),
-                opening_x: open_x,
-                opening_y: open_y,
-                opening_num: open_num,
-                arity: w_arity[i],
-                point,
-                num_leaf,
-                den_leaf,
-                eval_x: ev_x,
-                eval_y: ev_y,
-                alpha,
-                beta,
-            });
-            wc.num.clear();
+            wc.alpha = alpha;
+            wc.beta = beta;
+            points.push(point);
+            xs_tensors.push(x);
+            ys_tensors.push(y);
+            nums_tensors.push(num);
+            xs_claimed.push(eval_x);
+            ys_claimed.push(eval_y);
+            nums_claimed.push(num_leaf);
+            witness_locations[gid] = WitnessColumnLocation {
+                x_batch: 3 * g_idx,
+                x_table: ti,
+                y_batch: 3 * g_idx + 1,
+                y_table: ti,
+                num_batch: 3 * g_idx + 2,
+                num_table: ti,
+            };
         }
+        let x_proof = zkie_core::pcs::batch_open::prove_batch_open_committed(
+            &g.x_ctx, &table_idxs, &xs_tensors, &points, &xs_claimed,
+        ).expect("honest witness x batch-open");
+        let y_proof = zkie_core::pcs::batch_open::prove_batch_open_committed(
+            &g.y_ctx, &table_idxs, &ys_tensors, &points, &ys_claimed,
+        ).expect("honest witness y batch-open");
+        let num_proof = zkie_core::pcs::batch_open::prove_batch_open_committed(
+            &g.num_ctx, &table_idxs, &nums_tensors, &points, &nums_claimed,
+        ).expect("honest witness num batch-open");
+        witness_batch_openings.push(WitnessBatchOpening {
+            table_idxs: table_idxs.clone(),
+            points: points.clone(),
+            claimed: xs_claimed,
+            proof: x_proof,
+        });
+        witness_batch_openings.push(WitnessBatchOpening {
+            table_idxs: table_idxs.clone(),
+            points: points.clone(),
+            claimed: ys_claimed,
+            proof: y_proof,
+        });
+        witness_batch_openings.push(WitnessBatchOpening {
+            table_idxs,
+            points,
+            claimed: nums_claimed,
+            proof: num_proof,
+        });
+    }
+
+    // Record the verifier-side witness batch commitments in the same order.
+    for g in &witness_groups {
+        let total_slots = g.cols.len() * (1usize << g.arity);
+        let num_vars = total_slots.next_power_of_two().trailing_zeros() as usize;
+        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(num_vars, 90);
+        witness_batches.push(WitnessBatchCommit {
+            commitment: g.x_ctx.commitment.clone(),
+            arity: g.arity,
+            num_tables: g.cols.len(),
+            whir: zkie_core::pcs::whir::Whir::with_params(num_vars, 90, pow_bits),
+        });
+        witness_batches.push(WitnessBatchCommit {
+            commitment: g.y_ctx.commitment.clone(),
+            arity: g.arity,
+            num_tables: g.cols.len(),
+            whir: zkie_core::pcs::whir::Whir::with_params(num_vars, 90, pow_bits),
+        });
+        witness_batches.push(WitnessBatchCommit {
+            commitment: g.num_ctx.commitment.clone(),
+            arity: g.arity,
+            num_tables: g.cols.len(),
+            whir: zkie_core::pcs::whir::Whir::with_params(num_vars, 90, pow_bits),
+        });
+    }
+
+    // Re-run + open the per-lookup multiplicity columns `m`.
+    for (si, shard) in shards.iter_mut().enumerate() {
         for (i, tc) in shard.table_columns.iter_mut().enumerate() {
-            let (full_r, cs) = &t_challs[i];
-            let alpha = alphas[i];
-            let beta = betas[i];
-            let (num_t, den_t) = build_lookup_table_num_den(
-                &tc.m,
-                store.get(tc.table),
-                alpha,
-                beta,
-            );
+            let gid = shard_wc_off[si] + i;
+            let (full_r, cs) = &t_challs[gid];
+            let alpha = w_alphas[gid];
+            let beta = w_betas[gid];
+            let (num_t, den_t) = build_lookup_table_num_den(&tc.m, store.get(tc.table), alpha, beta);
             let new_proof = prove_fractional_with_challenges(num_t, den_t, full_r, cs);
             let (point, num_leaf, den_leaf) = fractional_leaf(&new_proof);
-            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(t_arity[i], 90);
-            let bw = zkie_core::pcs::whir::Whir::with_params(t_arity[i], 90, pow_bits);
-            let (open, ev) = bw.open(t_cm[i].prover_data.clone(), &t_cm[i].protocol, &point);
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(t_arities[si][i], 90);
+            let bw = zkie_core::pcs::whir::Whir::with_params(t_arities[si][i], 90, pow_bits);
+            let (open, ev) = bw.open(t_cms[si][i].prover_data.clone(), &t_cms[si][i].protocol, &point);
             assert_eq!(ev, num_leaf);
             let is_ident = identity_tables.contains(&tc.table);
             let (table_commitment, table_opening, table_eval) = if is_ident {
@@ -3061,8 +3209,11 @@ pub fn prove_committed_shard_dag(
                     90,
                     zkie_core::pcs::whir::Whir::required_pow_bits(*table_arity, 90),
                 );
-                let (open_table, ev_table) =
-                    table_bw.open(table_committed.prover_data.clone(), &table_committed.protocol, &point);
+                let (open_table, ev_table) = table_bw.open(
+                    table_committed.prover_data.clone(),
+                    &table_committed.protocol,
+                    &point,
+                );
                 (Some(table_committed.commitment.clone()), Some(open_table), ev_table)
             };
             tc.proof = new_proof;
@@ -3070,9 +3221,9 @@ pub fn prove_committed_shard_dag(
             tc.num_leaf = num_leaf;
             tc.den_leaf = den_leaf;
             table_openings.push(TableOpening {
-                commitment: t_cm[i].commitment.clone(),
+                commitment: t_cms[si][i].commitment.clone(),
                 opening: open,
-                arity: t_arity[i],
+                arity: t_arities[si][i],
                 point,
                 claimed: num_leaf,
                 table_commitment,
@@ -3340,7 +3491,9 @@ pub fn prove_committed_shard_dag(
         weight_locs,
         tokens: store.idx[tokens_t].clone(),
         argmax_t: store.idx[argmax_t].clone(),
-        witness_openings,
+        witness_batches,
+        witness_batch_openings,
+        witness_locations,
         table_openings,
         sel_openings,
         perm_openings,
@@ -3445,22 +3598,50 @@ pub fn verify_committed_shard_dag(
             return false;
         }
     }
-    for wo in &proof.witness_openings {
-        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(wo.arity, 90);
-        let bw = zkie_core::pcs::whir::Whir::with_params(wo.arity, 90, pow_bits);
-        let protocol = bw.opening_protocol(wo.arity, 1);
-        if bw.verify(&wo.commitment_num, &wo.opening_num, &protocol, &wo.point).ok() != Some(wo.num_leaf) {
+    if proof.witness_batches.len() != proof.witness_batch_openings.len() {
+        return false;
+    }
+    let total_witness_cols: usize = proof.shards.iter().map(|s| s.witness_columns.len()).sum();
+    if proof.witness_locations.len() != total_witness_cols {
+        return false;
+    }
+    for (bi, opening) in proof.witness_batch_openings.iter().enumerate() {
+        let batch = &proof.witness_batches[bi];
+        if opening.table_idxs.len() != opening.points.len()
+            || opening.table_idxs.len() != opening.claimed.len()
+        {
             return false;
         }
-        if bw.verify(&wo.commitment_x, &wo.opening_x, &protocol, &wo.point).ok() != Some(wo.eval_x) {
+        let protocol = batch.whir.opening_protocol(batch.arity, batch.num_tables);
+        if !zkie_core::pcs::batch_open::verify_batch_open_committed(
+            &batch.whir,
+            &batch.commitment,
+            &protocol,
+            batch.num_tables,
+            &opening.table_idxs,
+            &opening.points,
+            &opening.claimed,
+            &opening.proof,
+        ) {
             return false;
         }
-        if bw.verify(&wo.commitment_y, &wo.opening_y, &protocol, &wo.point).ok() != Some(wo.eval_y) {
-            return false;
-        }
-        let expected_den = wo.alpha + wo.eval_x + wo.beta * wo.eval_y;
-        if expected_den != wo.den_leaf {
-            return false;
+    }
+    {
+        let mut gid = 0usize;
+        for shard in &proof.shards {
+            for wc in &shard.witness_columns {
+                let loc = &proof.witness_locations[gid];
+                let eval_x = proof.witness_batch_openings[loc.x_batch].claimed[loc.x_table];
+                let eval_y = proof.witness_batch_openings[loc.y_batch].claimed[loc.y_table];
+                let num_leaf = proof.witness_batch_openings[loc.num_batch].claimed[loc.num_table];
+                if num_leaf != wc.num_leaf {
+                    return false;
+                }
+                if wc.alpha + eval_x + wc.beta * eval_y != wc.den_leaf {
+                    return false;
+                }
+                gid += 1;
+            }
         }
     }
     for so in &proof.sel_openings {
@@ -3532,23 +3713,18 @@ pub fn verify_committed_shard_dag(
         }
     }
 
-    // Fiat-Shamir: reconstruct the transcript from the commitment roots,
+    // Fiat-Shamir: reconstruct the global transcript from the commitment roots,
     // derive alpha/beta and the fractional challenges, and verify the prover
     // used exactly those derived values.
     {
-        let mut wi = 0usize;
+        let mut ts = Transcript::new(b"zkie-committed-frac-v1");
+        absorb_statement(&mut ts, ops, ops_per_shard);
+        for batch in &proof.witness_batches {
+            ts.absorb(&bincode::serialize(&batch.commitment).unwrap());
+        }
         let mut ti = 0usize;
         for (si, shard) in proof.shards.iter().enumerate() {
-            let mut ts = Transcript::new(b"zkie-committed-frac-v1");
-            absorb_statement(&mut ts, ops, ops_per_shard);
             ts.absorb_u64(si as u64);
-            for _ in &shard.witness_columns {
-                let wo = &proof.witness_openings[wi];
-                ts.absorb(&bincode::serialize(&wo.commitment_x).unwrap());
-                ts.absorb(&bincode::serialize(&wo.commitment_y).unwrap());
-                ts.absorb(&bincode::serialize(&wo.commitment_num).unwrap());
-                wi += 1;
-            }
             for _ in &shard.table_columns {
                 let to = &proof.table_openings[ti];
                 ts.absorb(&bincode::serialize(&to.commitment).unwrap());
@@ -3559,26 +3735,35 @@ pub fn verify_committed_shard_dag(
                 }
                 ti += 1;
             }
-            let w_base = wi - shard.witness_columns.len();
-            let t_base = ti - shard.table_columns.len();
-            let mut alphas: Vec<Goldilocks> = Vec::new();
-            let mut betas: Vec<Goldilocks> = Vec::new();
+        }
+        let mut alphas: Vec<Goldilocks> = Vec::new();
+        let mut betas: Vec<Goldilocks> = Vec::new();
+        for shard in &proof.shards {
             for _ in &shard.witness_columns {
                 alphas.push(ts.field());
                 betas.push(ts.field());
             }
-            for (i, _) in shard.witness_columns.iter().enumerate() {
-                let wo = &proof.witness_openings[w_base + i];
-                if wo.alpha != alphas[i] || wo.beta != betas[i] {
+        }
+        let mut gid = 0usize;
+        for shard in &proof.shards {
+            for wc in &shard.witness_columns {
+                if wc.alpha != alphas[gid] || wc.beta != betas[gid] {
                     return false;
                 }
+                gid += 1;
             }
-            for (i, _) in shard.table_columns.iter().enumerate() {
-                let to = &proof.table_openings[t_base + i];
-                if to.alpha != alphas[i] || to.beta != betas[i] {
+        }
+        gid = 0;
+        for shard in &proof.shards {
+            for _ in &shard.table_columns {
+                let to = &proof.table_openings[gid];
+                if to.alpha != alphas[gid] || to.beta != betas[gid] {
                     return false;
                 }
+                gid += 1;
             }
+        }
+        for shard in &proof.shards {
             for wc in &shard.witness_columns {
                 let full_r = ts.field_vec(wc.proof.full_r.len());
                 let cs = ts.field_vec(wc.proof.full_r.len());
@@ -3591,6 +3776,8 @@ pub fn verify_committed_shard_dag(
                     }
                 }
             }
+        }
+        for shard in &proof.shards {
             for tc in &shard.table_columns {
                 let full_r = ts.field_vec(tc.proof.full_r.len());
                 let cs = ts.field_vec(tc.proof.full_r.len());
