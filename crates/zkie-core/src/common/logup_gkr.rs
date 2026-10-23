@@ -269,6 +269,13 @@ pub fn verify_lookup_fractional(
     verify_fractional(proof, num, den, Goldilocks::from_u64(0))
 }
 
+// Chained store-free verify for a lookup: no x/y/table rebuild, no full
+// witness columns. Soundness is restored by opening num_0/den_0 at full_r
+// (see fractional_leaf) against their commitments in the committed path.
+pub fn verify_lookup_fractional_chain(proof: &FractionalProof) -> bool {
+    verify_fractional_chain(proof, Goldilocks::from_u64(0))
+}
+
 /// Batch several lookups into the SAME `table` into one fractional-sumcheck
 /// proof. All sample lists share one random challenge `(alpha, beta)`, so the
 /// sumcheck count drops from `xs.len()` to one and the table multiplicity is
@@ -476,6 +483,22 @@ mod tests {
         let (open_den, ev_den) = whir.open(c_den.prover_data.clone(), &c_den.protocol, &full_r);
         assert_eq!(whir.verify(&c_den.commitment, &open_den, &c_den.protocol, &full_r).unwrap(), ev_den);
         assert_eq!(ev_den, den_leaf);
+    }
+    #[test]
+    fn lookup_fractional_chain_roundtrip() {
+        let mut rng = XorShift64::new(0x11AD);
+        let n = 64usize;
+        let t = 16usize;
+        let table: Vec<Goldilocks> = (0..t).map(|_| rng.field()).collect();
+        let x: Vec<u32> = (0..n).map(|_| (rng.next_u64() % t as u64) as u32).collect();
+        let y: Vec<Goldilocks> = x.iter().map(|&i| table[i as usize]).collect();
+        let alpha = rng.field();
+        let beta = rng.field();
+        let mut proof = prove_lookup_fractional(&x, &y, &table, alpha, beta, &mut rng);
+        assert!(verify_lookup_fractional(&proof, &x, &y, &table, alpha, beta));
+        assert!(verify_lookup_fractional_chain(&proof));
+        proof.layers[0].proof.final_evals[3] += Goldilocks::from_u64(1);
+        assert!(!verify_lookup_fractional_chain(&proof));
     }
     #[test]
     fn committed_lookup_roundtrip() {
