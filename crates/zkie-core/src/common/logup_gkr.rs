@@ -453,6 +453,31 @@ mod tests {
         assert_eq!(den_leaf, crate::common::mle::eval(&den, &full_r));
     }
     #[test]
+    fn lookup_columns_commit_open_matches_leaf() {
+        use crate::pcs::committed::commit;
+        use crate::pcs::whir::Whir;
+        let mut rng = XorShift64::new(0x0BAD);
+        let n = 32usize;
+        let t = 16usize;
+        let table: Vec<Goldilocks> = (0..t).map(|_| rng.field()).collect();
+        let x: Vec<u32> = (0..n).map(|_| (rng.next_u64() % t as u64) as u32).collect();
+        let y: Vec<Goldilocks> = x.iter().map(|&i| table[i as usize]).collect();
+        let alpha = rng.field();
+        let beta = rng.field();
+        let (proof, num, den) = prove_lookup_fractional_columns(&x, &y, &table, alpha, beta, &mut rng);
+        let (full_r, num_leaf, den_leaf) = fractional_leaf(&proof);
+        let arity = num.len().trailing_zeros() as usize;
+        let whir = Whir::new_testing(arity);
+        let c_num = commit(&whir, &num);
+        let (open_num, ev_num) = whir.open(c_num.prover_data.clone(), &c_num.protocol, &full_r);
+        assert_eq!(whir.verify(&c_num.commitment, &open_num, &c_num.protocol, &full_r).unwrap(), ev_num);
+        assert_eq!(ev_num, num_leaf);
+        let c_den = commit(&whir, &den);
+        let (open_den, ev_den) = whir.open(c_den.prover_data.clone(), &c_den.protocol, &full_r);
+        assert_eq!(whir.verify(&c_den.commitment, &open_den, &c_den.protocol, &full_r).unwrap(), ev_den);
+        assert_eq!(ev_den, den_leaf);
+    }
+    #[test]
     fn committed_lookup_roundtrip() {
         use crate::pcs::committed::commit;
         use crate::pcs::whir::Whir;
