@@ -2698,6 +2698,57 @@ pub struct WitnessColumnLocation {
     pub num_table: usize,
 }
 
+/// Verifier-side generic batch commitment, shared by Scatter/Gather witness
+/// columns (same shape as `WitnessBatchCommit`, reused to avoid duplication).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ColumnBatchCommit {
+    pub commitment: zkie_core::pcs::whir::Commitment,
+    pub arity: usize,
+    pub num_tables: usize,
+    pub whir: zkie_core::pcs::whir::Whir,
+}
+
+/// One vertical batch opening for a group of same-arity columns of one type.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ColumnBatchOpening {
+    pub table_idxs: Vec<usize>,
+    pub points: Vec<Vec<Goldilocks>>,
+    pub claimed: Vec<Goldilocks>,
+    pub proof: zkie_core::pcs::batch_open::BatchOpeningProof,
+}
+
+/// Batch/table coordinates of one Scatter permutation witness (a/b/num).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PermLocation {
+    pub a_batch: usize,
+    pub a_table: usize,
+    pub b_batch: usize,
+    pub b_table: usize,
+    pub num_batch: usize,
+    pub num_table: usize,
+}
+
+/// Batch/table coordinates of one Gather histogram witness (8 columns).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct GatherLocation {
+    pub num_source_batch: usize,
+    pub num_source_table: usize,
+    pub den_source_batch: usize,
+    pub den_source_table: usize,
+    pub weighted_batch: usize,
+    pub weighted_table: usize,
+    pub num_target_batch: usize,
+    pub num_target_table: usize,
+    pub den_target_batch: usize,
+    pub den_target_table: usize,
+    pub out_batch: usize,
+    pub out_table: usize,
+    pub gate_batch: usize,
+    pub gate_table: usize,
+    pub token_id_batch: usize,
+    pub token_id_table: usize,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct SelOpening {
     pub commitment: zkie_core::pcs::whir::Commitment,
@@ -2706,63 +2757,6 @@ pub struct SelOpening {
     pub openings: Vec<zkie_core::pcs::whir::Proof>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct GatherOpening {
-    pub commitment_num_source: zkie_core::pcs::whir::Commitment,
-    pub commitment_den_source: zkie_core::pcs::whir::Commitment,
-    pub commitment_num_target: zkie_core::pcs::whir::Commitment,
-    pub commitment_den_target: zkie_core::pcs::whir::Commitment,
-    pub commitment_weighted: zkie_core::pcs::whir::Commitment,
-    pub commitment_gate: zkie_core::pcs::whir::Commitment,
-    pub commitment_out: zkie_core::pcs::whir::Commitment,
-    pub commitment_token_id: zkie_core::pcs::whir::Commitment,
-    pub arity_src: usize,
-    pub arity_tgt: usize,
-    pub arity_gate: usize,
-    pub point_src: Vec<Goldilocks>,
-    pub point_tgt: Vec<Goldilocks>,
-    pub point_gate: Vec<Goldilocks>,
-    pub point_token_id: Vec<Goldilocks>,
-    pub opening_num_source: zkie_core::pcs::whir::Proof,
-    pub opening_den_source: zkie_core::pcs::whir::Proof,
-    pub opening_num_target: zkie_core::pcs::whir::Proof,
-    pub opening_den_target: zkie_core::pcs::whir::Proof,
-    pub opening_weighted: zkie_core::pcs::whir::Proof,
-    pub opening_gate: zkie_core::pcs::whir::Proof,
-    pub opening_out: zkie_core::pcs::whir::Proof,
-    pub opening_token_id: zkie_core::pcs::whir::Proof,
-    pub eval_num_source: Goldilocks,
-    pub eval_den_source: Goldilocks,
-    pub eval_num_target: Goldilocks,
-    pub eval_den_target: Goldilocks,
-    pub eval_weighted: Goldilocks,
-    pub eval_gate: Goldilocks,
-    pub eval_out: Goldilocks,
-    pub eval_token_id: Goldilocks,
-    pub alpha: Goldilocks,
-    pub gamma: Vec<Goldilocks>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct PermOpening {
-    pub commitment_a: zkie_core::pcs::whir::Commitment,
-    pub commitment_b: zkie_core::pcs::whir::Commitment,
-    pub commitment_num: zkie_core::pcs::whir::Commitment,
-    pub opening_a: zkie_core::pcs::whir::Proof,
-    pub opening_b: zkie_core::pcs::whir::Proof,
-    pub opening_num_a: zkie_core::pcs::whir::Proof,
-    pub opening_num_b: zkie_core::pcs::whir::Proof,
-    pub arity: usize,
-    pub point_a: Vec<Goldilocks>,
-    pub point_b: Vec<Goldilocks>,
-    pub eval_a: Goldilocks,
-    pub eval_b: Goldilocks,
-    pub num_leaf_a: Goldilocks,
-    pub num_leaf_b: Goldilocks,
-    pub den_leaf_a: Goldilocks,
-    pub den_leaf_b: Goldilocks,
-    pub alpha: Goldilocks,
-}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CommittedShardDagProof {
@@ -2780,8 +2774,13 @@ pub struct CommittedShardDagProof {
     pub witness_locations: Vec<WitnessColumnLocation>,
     pub table_openings: Vec<TableOpening>,
     pub sel_openings: Vec<SelOpening>,
-    pub perm_openings: Vec<PermOpening>,
-    pub gather_openings: Vec<GatherOpening>,
+    pub perm_batches: Vec<ColumnBatchCommit>,
+    pub perm_batch_openings: Vec<ColumnBatchOpening>,
+    pub perm_locations: Vec<PermLocation>,
+    pub gather_batches: Vec<ColumnBatchCommit>,
+    pub gather_batch_openings: Vec<ColumnBatchOpening>,
+    pub gather_locations: Vec<GatherLocation>,
+    pub gather_indep_batches: usize,
 }
 
 pub fn prove_committed_shard_dag(
@@ -3282,204 +3281,443 @@ pub fn prove_committed_shard_dag(
         }
     }
 
-    // Commit + open each Scatter permutation witness (a/b columns + indicator).
-    let mut perm_openings = Vec::new();
-    let perm_ranges = shard_ranges(ops.len(), ops_per_shard);
-    for (si, &(s, e)) in perm_ranges.iter().enumerate() {
-        for (op, op_proof) in ops[s..e].iter().zip(shards[si].ops.iter_mut()) {
-            if let (Op::Scatter { .. }, OpProof::Scatter(sp)) = (op, op_proof) {
-                let n_entries = sp.perm.a.len();
-                let arity = n_entries.next_power_of_two().max(32).trailing_zeros() as usize;
-                let total = 1usize << arity;
+    // Commit + open each Scatter permutation witness (a/b/num columns), grouped
+    // by arity across all Scatter ops (same-shape vertical batch).
+    let mut perm_batches: Vec<ColumnBatchCommit> = Vec::new();
+    let mut perm_batch_openings: Vec<ColumnBatchOpening> = Vec::new();
+    let mut perm_locations: Vec<PermLocation> = Vec::new();
+
+    let mut perm_ops: Vec<(usize, usize, usize)> = Vec::new(); // (si, li, arity)
+    {
+        let pr = shard_ranges(ops.len(), ops_per_shard);
+        for (si, &(s, e)) in pr.iter().enumerate() {
+            for (li, op) in ops[s..e].iter().enumerate() {
+                if let Op::Scatter { .. } = op {
+                    let arity = match &shards[si].ops[li] {
+                        OpProof::Scatter(p) => p.perm.a.len().next_power_of_two().trailing_zeros() as usize,
+                        _ => unreachable!(),
+                    };
+                    perm_ops.push((si, li, arity));
+                }
+            }
+        }
+    }
+    let mut perm_gid: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    for (gid, &(si, li, _)) in perm_ops.iter().enumerate() {
+        perm_gid.insert((si, li), gid);
+    }
+
+    struct PermGroup {
+        arity: usize,
+        ops: Vec<(usize, usize)>,
+        a_ctx: zkie_core::pcs::committed::BatchCtx,
+        b_ctx: zkie_core::pcs::committed::BatchCtx,
+        num_ctx: zkie_core::pcs::committed::BatchCtx,
+    }
+    let mut perm_groups: Vec<PermGroup> = Vec::new();
+    {
+        let mut by_arity: std::collections::BTreeMap<usize, Vec<(usize, usize)>> = std::collections::BTreeMap::new();
+        for &(si, li, arity) in &perm_ops {
+            by_arity.entry(arity).or_default().push((si, li));
+        }
+        for (arity, ops_) in by_arity {
+            let total = 1usize << arity;
+            let mut a_cols: Vec<Vec<Goldilocks>> = Vec::with_capacity(ops_.len());
+            let mut b_cols: Vec<Vec<Goldilocks>> = Vec::with_capacity(ops_.len());
+            let mut num_cols: Vec<Vec<Goldilocks>> = Vec::with_capacity(ops_.len());
+            for &(si, li) in &ops_ {
+                let sp = match &shards[si].ops[li] {
+                    OpProof::Scatter(p) => p,
+                    _ => unreachable!(),
+                };
                 let mut a_pad = vec![Goldilocks::ZERO; total];
                 let mut b_pad = vec![Goldilocks::ZERO; total];
                 let mut num_pad = vec![Goldilocks::ZERO; total];
-                for i in 0..n_entries {
+                for i in 0..sp.perm.a.len() {
                     a_pad[i] = sp.perm.a[i];
                     b_pad[i] = sp.perm.b[i];
                     num_pad[i] = Goldilocks::ONE;
                 }
-                let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
-                let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
-                let c_a = zkie_core::pcs::committed::commit(&bw, &a_pad);
-                let c_b = zkie_core::pcs::committed::commit(&bw, &b_pad);
-                let c_num = zkie_core::pcs::committed::commit(&bw, &num_pad);
-                let mut ts = Transcript::new(b"zkie-committed-perm-v1");
-                absorb_statement(&mut ts, ops, ops_per_shard);
-                ts.absorb_u64(si as u64);
-                ts.absorb(&bincode::serialize(&c_a.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_b.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_num.commitment).unwrap());
-                let alpha = ts.field();
-                let (num_a, den_a) = build_perm_num_den(&sp.perm.a, alpha);
-                let (num_b, den_b) = build_perm_num_den(&sp.perm.b, alpha);
-                let full_r_a = ts.field_vec(arity);
-                let cs_a = ts.field_vec(arity);
-                let full_r_b = ts.field_vec(arity);
-                let cs_b = ts.field_vec(arity);
-                let new_a = prove_fractional_with_challenges(num_a, den_a, &full_r_a, &cs_a);
-                let new_b = prove_fractional_with_challenges(num_b, den_b, &full_r_b, &cs_b);
-                let (point_a, num_leaf_a, den_leaf_a) = fractional_leaf(&new_a);
-                let (point_b, num_leaf_b, den_leaf_b) = fractional_leaf(&new_b);
-                let (open_a, ev_a) = bw.open(c_a.prover_data.clone(), &c_a.protocol, &point_a);
-                let (open_b, ev_b) = bw.open(c_b.prover_data.clone(), &c_b.protocol, &point_b);
-                let (open_num_a, ev_num_a) = bw.open(c_num.prover_data.clone(), &c_num.protocol, &point_a);
-                let (open_num_b, ev_num_b) = bw.open(c_num.prover_data.clone(), &c_num.protocol, &point_b);
-                assert_eq!(ev_num_a, num_leaf_a);
-                assert_eq!(ev_num_b, num_leaf_b);
-                sp.perm.a_side = new_a;
-                sp.perm.b_side = new_b;
-                sp.perm.alpha = alpha;
-                sp.perm.a.clear();
-                sp.perm.b.clear();
-                perm_openings.push(PermOpening {
-                    commitment_a: c_a.commitment,
-                    commitment_b: c_b.commitment,
-                    commitment_num: c_num.commitment,
-                    opening_a: open_a,
-                    opening_b: open_b,
-                    opening_num_a: open_num_a,
-                    opening_num_b: open_num_b,
-                    arity,
-                    point_a,
-                    point_b,
-                    eval_a: ev_a,
-                    eval_b: ev_b,
-                    num_leaf_a,
-                    num_leaf_b,
-                    den_leaf_a,
-                    den_leaf_b,
-                    alpha,
-                });
+                a_cols.push(a_pad);
+                b_cols.push(b_pad);
+                num_cols.push(num_pad);
             }
+            let num_tables = ops_.len();
+            let num_vars = (num_tables * total).next_power_of_two().trailing_zeros() as usize;
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(num_vars, 90);
+            let base_whir = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+            let a_refs: Vec<&[Goldilocks]> = a_cols.iter().map(|v| v.as_slice()).collect();
+            let b_refs: Vec<&[Goldilocks]> = b_cols.iter().map(|v| v.as_slice()).collect();
+            let num_refs: Vec<&[Goldilocks]> = num_cols.iter().map(|v| v.as_slice()).collect();
+            let (ca, pa, pra, wa) = base_whir.commit_batch(&a_refs);
+            let (cb, pb, prb, wb) = base_whir.commit_batch(&b_refs);
+            let (cn, pn, prn, wn) = base_whir.commit_batch(&num_refs);
+            perm_groups.push(PermGroup {
+                arity,
+                ops: ops_,
+                a_ctx: zkie_core::pcs::committed::BatchCtx { commitment: ca, prover_data: pa, protocol: pra, whir: wa, num_tables },
+                b_ctx: zkie_core::pcs::committed::BatchCtx { commitment: cb, prover_data: pb, protocol: prb, whir: wb, num_tables },
+                num_ctx: zkie_core::pcs::committed::BatchCtx { commitment: cn, prover_data: pn, protocol: prn, whir: wn, num_tables },
+            });
         }
     }
 
-    // Commit + open each Gather histogram witness (num/den + weighted/gate/out).
-    let mut gather_openings = Vec::new();
-    let gather_ranges = shard_ranges(ops.len(), ops_per_shard);
-    for (si, &(s, e)) in gather_ranges.iter().enumerate() {
-        for (op, op_proof) in ops[s..e].iter().zip(shards[si].ops.iter_mut()) {
-            if let (Op::Gather { m, h, .. }, OpProof::Gather(sp)) = (op, op_proof) {
-                let s_len = sp.token_id.len();
-                let arity_src = (s_len * h).next_power_of_two().trailing_zeros() as usize;
-                let arity_tgt = (m * h).next_power_of_two().trailing_zeros() as usize;
-                let arity_gate = s_len.next_power_of_two().trailing_zeros() as usize;
-                let pad = |v: &[Goldilocks], arity: usize| -> Vec<Goldilocks> {
-                    let total = 1usize << arity;
-                    let mut o = vec![Goldilocks::ZERO; total];
-                    o[..v.len()].copy_from_slice(v);
-                    o
+    let mut perm_ts = Transcript::new(b"zkie-committed-perm-v1");
+    absorb_statement(&mut perm_ts, ops, ops_per_shard);
+    for g in &perm_groups {
+        perm_ts.absorb(&bincode::serialize(&g.a_ctx.commitment).unwrap());
+        perm_ts.absorb(&bincode::serialize(&g.b_ctx.commitment).unwrap());
+        perm_ts.absorb(&bincode::serialize(&g.num_ctx.commitment).unwrap());
+    }
+    let mut perm_alphas: Vec<Goldilocks> = Vec::new();
+    let mut perm_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
+    for &(_, _, arity) in &perm_ops {
+        perm_alphas.push(perm_ts.field());
+        perm_challs.push((perm_ts.field_vec(arity), perm_ts.field_vec(arity), perm_ts.field_vec(arity), perm_ts.field_vec(arity)));
+    }
+
+    for g in &perm_groups {
+        let num_vars = (g.ops.len() * (1usize << g.arity)).next_power_of_two().trailing_zeros() as usize;
+        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(num_vars, 90);
+        for ctx in [&g.a_ctx, &g.b_ctx, &g.num_ctx] {
+            perm_batches.push(ColumnBatchCommit {
+                commitment: ctx.commitment.clone(),
+                arity: g.arity,
+                num_tables: g.ops.len(),
+                whir: zkie_core::pcs::whir::Whir::with_params(num_vars, 90, pow_bits),
+            });
+        }
+    }
+
+    let total_perm_ops = perm_ops.len();
+    let mut perm_locations_slots: Vec<Option<PermLocation>> = (0..total_perm_ops).map(|_| None).collect();
+    for (g_idx, g) in perm_groups.iter().enumerate() {
+        let n = g.ops.len();
+        let table_idxs: Vec<usize> = (0..n).collect();
+        let mut points_a = Vec::with_capacity(n);
+        let mut points_b = Vec::with_capacity(n);
+        let mut a_claimed = Vec::with_capacity(n);
+        let mut b_claimed = Vec::with_capacity(n);
+        let mut num_idxs = Vec::with_capacity(2 * n);
+        let mut num_points = Vec::with_capacity(2 * n);
+        let mut num_claimed = Vec::with_capacity(2 * n);
+        let mut a_tensors = Vec::with_capacity(n);
+        let mut b_tensors = Vec::with_capacity(n);
+        let mut num_tensors = Vec::with_capacity(n);
+        for (ti, &(si, li)) in g.ops.iter().enumerate() {
+            let gid = perm_gid[&(si, li)];
+            let (full_r_a, cs_a, full_r_b, cs_b) = &perm_challs[gid];
+            let alpha = perm_alphas[gid];
+            let sp = match &mut shards[si].ops[li] {
+                OpProof::Scatter(p) => p,
+                _ => unreachable!(),
+            };
+            let a = std::mem::take(&mut sp.perm.a);
+            let b = std::mem::take(&mut sp.perm.b);
+            let (num_a, den_a) = build_perm_num_den(&a, alpha);
+            let (num_b, den_b) = build_perm_num_den(&b, alpha);
+            let new_a = prove_fractional_with_challenges(num_a, den_a, full_r_a, cs_a);
+            let new_b = prove_fractional_with_challenges(num_b, den_b, full_r_b, cs_b);
+            let (point_a, num_leaf_a, den_leaf_a) = fractional_leaf(&new_a);
+            let (point_b, num_leaf_b, den_leaf_b) = fractional_leaf(&new_b);
+            sp.perm.a_side = new_a;
+            sp.perm.b_side = new_b;
+            sp.perm.alpha = alpha;
+            let total = 1usize << g.arity;
+            let mut a_pad = vec![Goldilocks::ZERO; total];
+            let mut b_pad = vec![Goldilocks::ZERO; total];
+            let mut num_pad = vec![Goldilocks::ZERO; total];
+            for i in 0..a.len() {
+                a_pad[i] = a[i];
+                b_pad[i] = b[i];
+                num_pad[i] = Goldilocks::ONE;
+            }
+            points_a.push(point_a.clone());
+            points_b.push(point_b.clone());
+            a_claimed.push(mle::eval(&a_pad, &point_a));
+            b_claimed.push(mle::eval(&b_pad, &point_b));
+            num_idxs.push(ti);
+            num_idxs.push(ti);
+            num_points.push(point_a.clone());
+            num_points.push(point_b.clone());
+            num_claimed.push(num_leaf_a);
+            num_claimed.push(num_leaf_b);
+            a_tensors.push(a_pad);
+            b_tensors.push(b_pad);
+            num_tensors.push(num_pad.clone());
+            num_tensors.push(num_pad);
+            perm_locations_slots[gid] = Some(PermLocation {
+                a_batch: 3 * g_idx,
+                a_table: ti,
+                b_batch: 3 * g_idx + 1,
+                b_table: ti,
+                num_batch: 3 * g_idx + 2,
+                num_table: ti,
+            });
+        }
+        let a_proof = zkie_core::pcs::batch_open::prove_batch_open_committed(&g.a_ctx, &table_idxs, &a_tensors, &points_a, &a_claimed).expect("honest perm a batch-open");
+        let b_proof = zkie_core::pcs::batch_open::prove_batch_open_committed(&g.b_ctx, &table_idxs, &b_tensors, &points_b, &b_claimed).expect("honest perm b batch-open");
+        let num_proof = zkie_core::pcs::batch_open::prove_batch_open_committed(&g.num_ctx, &num_idxs, &num_tensors, &num_points, &num_claimed).expect("honest perm num batch-open");
+        perm_batch_openings.push(ColumnBatchOpening { table_idxs: table_idxs.clone(), points: points_a, claimed: a_claimed, proof: a_proof });
+        perm_batch_openings.push(ColumnBatchOpening { table_idxs: table_idxs.clone(), points: points_b, claimed: b_claimed, proof: b_proof });
+        perm_batch_openings.push(ColumnBatchOpening { table_idxs: num_idxs, points: num_points, claimed: num_claimed, proof: num_proof });
+    }
+    perm_locations = perm_locations_slots.into_iter().map(|x| x.unwrap()).collect();
+
+
+    // Commit + open each Gather histogram witness, grouped by (arity, type).
+    // den_source/den_target depend on the Fiat-Shamir alpha, so they are rebuilt
+    // with that alpha AFTER it is derived; the six alpha-independent columns are
+    // committed first. This closes the soundness gap where the plain-path alpha
+    // differed from the committed-path alpha.
+    let mut gather_batches: Vec<ColumnBatchCommit> = Vec::new();
+    let mut gather_batch_openings: Vec<ColumnBatchOpening> = Vec::new();
+    let mut gather_locations: Vec<GatherLocation> = Vec::new();
+
+    // type ids: 0=num_source 1=den_source 2=weighted 3=num_target 4=den_target
+    //           5=out 6=gate 7=token_id
+    let mut gather_ops: Vec<(usize, usize, usize, usize, usize, usize, usize)> = Vec::new();
+    {
+        let gr = shard_ranges(ops.len(), ops_per_shard);
+        for (si, &(s, e)) in gr.iter().enumerate() {
+            for (li, op) in ops[s..e].iter().enumerate() {
+                if let (Op::Gather { m, h, .. }, OpProof::Gather(sp)) = (op, &shards[si].ops[li]) {
+                    let s_len = sp.token_id.len();
+                    let arity_src = (s_len * h).next_power_of_two().trailing_zeros() as usize;
+                    let arity_tgt = (m * h).next_power_of_two().trailing_zeros() as usize;
+                    let arity_gate = s_len.next_power_of_two().trailing_zeros() as usize;
+                    gather_ops.push((si, li, arity_src, arity_tgt, arity_gate, *h, *m));
+                }
+            }
+        }
+    }
+    let mut gather_gid: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    for (gid, &(si, li, _, _, _, _, _)) in gather_ops.iter().enumerate() {
+        gather_gid.insert((si, li), gid);
+    }
+
+    struct GatherGroup {
+        arity: usize,
+        ty: usize,
+        ops: Vec<(usize, usize)>,
+        cols: Vec<Vec<Goldilocks>>,
+        ctx: zkie_core::pcs::committed::BatchCtx,
+    }
+    let mut gather_groups: Vec<GatherGroup> = Vec::new();
+    let pad = |v: &[Goldilocks], arity: usize| -> Vec<Goldilocks> {
+        let total = 1usize << arity;
+        let mut o = vec![Goldilocks::ZERO; total];
+        o[..v.len()].copy_from_slice(v);
+        o
+    };
+
+    // Phase A: commit the six alpha-independent columns.
+    {
+        let indep = [0usize, 2, 3, 5, 6, 7];
+        let mut by_key: std::collections::BTreeMap<(usize, usize), Vec<(usize, usize)>> = std::collections::BTreeMap::new();
+        for &(si, li, arity_src, arity_tgt, arity_gate, _, _) in &gather_ops {
+            for &ty in &indep {
+                let ar = match ty { 0 | 2 => arity_src, 3 | 5 => arity_tgt, _ => arity_gate };
+                by_key.entry((ar, ty)).or_default().push((si, li));
+            }
+        }
+        for ((arity, ty), ops_) in by_key {
+            let mut cols = Vec::with_capacity(ops_.len());
+            for &(si, li) in &ops_ {
+                let sp = match &shards[si].ops[li] { OpProof::Gather(p) => p, _ => unreachable!() };
+                let col = match ty {
+                    0 => pad(&sp.num_source, arity),
+                    2 => pad(&sp.weighted, arity),
+                    3 => pad(&sp.num_target, arity),
+                    5 => pad(&sp.out, arity),
+                    6 => pad(&sp.gate, arity),
+                    _ => { let g: Vec<Goldilocks> = sp.token_id.iter().map(|&t| Goldilocks::from_u64(t as u64)).collect(); pad(&g, arity) }
                 };
-                let num_source_pad = pad(&sp.num_source, arity_src);
-                let den_source_pad = pad(&sp.den_source, arity_src);
-                let num_target_pad = pad(&sp.num_target, arity_tgt);
-                let den_target_pad = pad(&sp.den_target, arity_tgt);
-                let weighted_pad = pad(&sp.weighted, arity_src);
-                let out_pad = pad(&sp.out, arity_tgt);
-                let gate_pad = pad(&sp.gate, arity_gate);
+                cols.push(col);
+            }
+            let num_tables = ops_.len();
+            let num_vars = (num_tables * (1usize << arity)).next_power_of_two().trailing_zeros() as usize;
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(num_vars, 90);
+            let base_whir = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+            let refs: Vec<&[Goldilocks]> = cols.iter().map(|v| v.as_slice()).collect();
+            let (c, p, pr, w) = base_whir.commit_batch(&refs);
+            gather_groups.push(GatherGroup { arity, ty, ops: ops_, cols, ctx: zkie_core::pcs::committed::BatchCtx { commitment: c, prover_data: p, protocol: pr, whir: w, num_tables } });
+        }
+    }
 
-                let src_bw = zkie_core::pcs::whir::Whir::with_params(arity_src, 90, zkie_core::pcs::whir::Whir::required_pow_bits(arity_src, 90));
-                let tgt_bw = zkie_core::pcs::whir::Whir::with_params(arity_tgt, 90, zkie_core::pcs::whir::Whir::required_pow_bits(arity_tgt, 90));
-                let gate_bw = zkie_core::pcs::whir::Whir::with_params(arity_gate, 90, zkie_core::pcs::whir::Whir::required_pow_bits(arity_gate, 90));
+    let gather_indep_count = gather_groups.len();
+    // FS: absorb the six independent roots, then derive alpha/gamma.
+    let mut ts = Transcript::new(b"zkie-committed-gather-v1");
+    absorb_statement(&mut ts, ops, ops_per_shard);
+    for g in &gather_groups {
+        ts.absorb(&bincode::serialize(&g.ctx.commitment).unwrap());
+    }
+    let mut gather_alphas: Vec<Goldilocks> = Vec::new();
+    let mut gather_gammas: Vec<Vec<Goldilocks>> = Vec::new();
+    for &(_, _, _, _, _, h, _) in &gather_ops {
+        gather_alphas.push(ts.field());
+        gather_gammas.push((0..h).map(|_| ts.field()).collect());
+    }
 
-                let c_num_source = zkie_core::pcs::committed::commit(&src_bw, &num_source_pad);
-                let c_den_source = zkie_core::pcs::committed::commit(&src_bw, &den_source_pad);
-                let c_num_target = zkie_core::pcs::committed::commit(&tgt_bw, &num_target_pad);
-                let c_den_target = zkie_core::pcs::committed::commit(&tgt_bw, &den_target_pad);
-                let c_weighted = zkie_core::pcs::committed::commit(&src_bw, &weighted_pad);
-                let c_out = zkie_core::pcs::committed::commit(&tgt_bw, &out_pad);
-                let c_gate = zkie_core::pcs::committed::commit(&gate_bw, &gate_pad);
-                let token_id_gold: Vec<Goldilocks> = sp.token_id.iter().map(|&t| Goldilocks::from_u64(t as u64)).collect();
-                let token_id_pad = pad(&token_id_gold, arity_gate);
-                let c_token_id = zkie_core::pcs::committed::commit(&gate_bw, &token_id_pad);
+    // Phase B: rebuild den_source/den_target with the FS alpha, then commit them.
+    let mut op_den_src: Vec<Vec<Goldilocks>> = vec![Vec::new(); gather_ops.len()];
+    let mut op_den_tgt: Vec<Vec<Goldilocks>> = vec![Vec::new(); gather_ops.len()];
+    for (gid, &(si, li, arity_src, arity_tgt, _, h, m)) in gather_ops.iter().enumerate() {
+        let alpha = gather_alphas[gid];
+        let sp = match &shards[si].ops[li] { OpProof::Gather(p) => p, _ => unreachable!() };
+        let mut dsrc = vec![alpha; 1usize << arity_src];
+        for pos in 0..sp.token_id.len() {
+            for d in 0..h {
+                dsrc[pos * h + d] = alpha - Goldilocks::from_u64(sp.token_id[pos] as u64);
+            }
+        }
+        let mut dtgt = vec![alpha; 1usize << arity_tgt];
+        for t in 0..m {
+            for d in 0..h {
+                dtgt[t * h + d] = alpha - Goldilocks::from_u64(t as u64);
+            }
+        }
+        op_den_src[gid] = dsrc;
+        op_den_tgt[gid] = dtgt;
+    }
+    {
+        let den_tys = [1usize, 4];
+        let mut by_key: std::collections::BTreeMap<(usize, usize), Vec<(usize, usize)>> = std::collections::BTreeMap::new();
+        for &(si, li, arity_src, arity_tgt, _, _, _) in &gather_ops {
+            for &ty in &den_tys {
+                let ar = if ty == 1 { arity_src } else { arity_tgt };
+                by_key.entry((ar, ty)).or_default().push((si, li));
+            }
+        }
+        for ((arity, ty), ops_) in by_key {
+            let mut cols = Vec::with_capacity(ops_.len());
+            for &(si, li) in &ops_ {
+                let gid = gather_gid[&(si, li)];
+                let col = if ty == 1 { op_den_src[gid].clone() } else { op_den_tgt[gid].clone() };
+                cols.push(col);
+            }
+            let num_tables = ops_.len();
+            let num_vars = (num_tables * (1usize << arity)).next_power_of_two().trailing_zeros() as usize;
+            let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(num_vars, 90);
+            let base_whir = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+            let refs: Vec<&[Goldilocks]> = cols.iter().map(|v| v.as_slice()).collect();
+            let (c, p, pr, w) = base_whir.commit_batch(&refs);
+            gather_groups.push(GatherGroup { arity, ty, ops: ops_, cols, ctx: zkie_core::pcs::committed::BatchCtx { commitment: c, prover_data: p, protocol: pr, whir: w, num_tables } });
+        }
+    }
 
-                let mut ts = Transcript::new(b"zkie-committed-gather-v1");
-                absorb_statement(&mut ts, ops, ops_per_shard);
-                ts.absorb_u64(si as u64);
-                ts.absorb(&bincode::serialize(&c_num_source.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_den_source.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_num_target.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_den_target.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_weighted.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_out.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_gate.commitment).unwrap());
-                ts.absorb(&bincode::serialize(&c_token_id.commitment).unwrap());
-                let alpha = ts.field();
-                let gamma: Vec<Goldilocks> = (0..*h).map(|_| ts.field()).collect();
+    // FS: absorb the two den roots, then derive fractional challenges.
+    for g in gather_groups.iter().skip(6) {
+        ts.absorb(&bincode::serialize(&g.ctx.commitment).unwrap());
+    }
+    let mut gather_challs: Vec<(Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>, Vec<Goldilocks>)> = Vec::new();
+    for &(_, _, arity_src, arity_tgt, _, _, _) in &gather_ops {
+        gather_challs.push((ts.field_vec(arity_src), ts.field_vec(arity_src), ts.field_vec(arity_tgt), ts.field_vec(arity_tgt)));
+    }
 
-                let full_r_src = ts.field_vec(arity_src);
-                let cs_src = ts.field_vec(arity_src);
-                let new_src = prove_fractional_with_challenges(sp.num_source.clone(), sp.den_source.clone(), &full_r_src, &cs_src);
-                let (point_src, num_leaf_src, den_leaf_src) = fractional_leaf(&new_src);
-                let full_r_tgt = ts.field_vec(arity_tgt);
-                let cs_tgt = ts.field_vec(arity_tgt);
-                let new_tgt = prove_fractional_with_challenges(sp.num_target.clone(), sp.den_target.clone(), &full_r_tgt, &cs_tgt);
-                let (point_tgt, num_leaf_tgt, den_leaf_tgt) = fractional_leaf(&new_tgt);
+    // Record verifier-side batches (8 groups, in the same order).
+    for g in &gather_groups {
+        let num_vars = (g.ops.len() * (1usize << g.arity)).next_power_of_two().trailing_zeros() as usize;
+        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(num_vars, 90);
+        gather_batches.push(ColumnBatchCommit {
+            commitment: g.ctx.commitment.clone(),
+            arity: g.arity,
+            num_tables: g.ops.len(),
+            whir: zkie_core::pcs::whir::Whir::with_params(num_vars, 90, pow_bits),
+        });
+    }
 
-                let (open_num_source, ev_num_source) = src_bw.open(c_num_source.prover_data.clone(), &c_num_source.protocol, &point_src);
-                let (open_den_source, ev_den_source) = src_bw.open(c_den_source.prover_data.clone(), &c_den_source.protocol, &point_src);
-                let (open_num_target, ev_num_target) = tgt_bw.open(c_num_target.prover_data.clone(), &c_num_target.protocol, &point_tgt);
-                let (open_den_target, ev_den_target) = tgt_bw.open(c_den_target.prover_data.clone(), &c_den_target.protocol, &point_tgt);
-                let (open_weighted, ev_weighted) = src_bw.open(c_weighted.prover_data.clone(), &c_weighted.protocol, &sp.r_prod_source);
-                let h_log = h.trailing_zeros() as usize;
-                let point_gate: Vec<Goldilocks> = sp.r_prod_source[h_log..].to_vec();
-                let (open_gate, ev_gate) = gate_bw.open(c_gate.prover_data.clone(), &c_gate.protocol, &point_gate);
-                let (open_out, ev_out) = tgt_bw.open(c_out.prover_data.clone(), &c_out.protocol, &sp.r_prod_target);
-                let point_token_id: Vec<Goldilocks> = point_src[h_log..].to_vec();
-                let (open_token_id, ev_token_id) = gate_bw.open(c_token_id.prover_data.clone(), &c_token_id.protocol, &point_token_id);
+    // Re-run the fractional sumchecks once per Gather op, using the rebuilt den.
+    let mut op_point_src: Vec<Vec<Goldilocks>> = vec![Vec::new(); gather_ops.len()];
+    let mut op_point_tgt: Vec<Vec<Goldilocks>> = vec![Vec::new(); gather_ops.len()];
+    for (gid, &(si, li, arity_src, arity_tgt, _, _, _)) in gather_ops.iter().enumerate() {
+        let (full_r_src, cs_src, full_r_tgt, cs_tgt) = &gather_challs[gid];
+        let alpha = gather_alphas[gid];
+        let gamma = gather_gammas[gid].clone();
+        let sp = match &mut shards[si].ops[li] { OpProof::Gather(p) => p, _ => unreachable!() };
+        let new_src = prove_fractional_with_challenges(sp.num_source.clone(), op_den_src[gid].clone(), full_r_src, cs_src);
+        let (point_src, _, _) = fractional_leaf(&new_src);
+        let new_tgt = prove_fractional_with_challenges(sp.num_target.clone(), op_den_tgt[gid].clone(), full_r_tgt, cs_tgt);
+        let (point_tgt, _, _) = fractional_leaf(&new_tgt);
+        sp.source_side = new_src;
+        sp.target_side = new_tgt;
+        sp.alpha = alpha;
+        sp.gamma = gamma;
+        op_point_src[gid] = point_src;
+        op_point_tgt[gid] = point_tgt;
+        let _ = arity_src;
+        let _ = arity_tgt;
+    }
 
-                sp.source_side = new_src;
-                sp.target_side = new_tgt;
-                sp.alpha = alpha;
-                sp.gamma = gamma.clone();
-                sp.weighted.clear();
-                sp.gate.clear();
-                sp.out.clear();
-                sp.num_source.clear();
-                sp.den_source.clear();
-                sp.num_target.clear();
-                sp.den_target.clear();
-                sp.token_id.clear();
-
-                gather_openings.push(GatherOpening {
-                    commitment_num_source: c_num_source.commitment,
-                    commitment_den_source: c_den_source.commitment,
-                    commitment_num_target: c_num_target.commitment,
-                    commitment_den_target: c_den_target.commitment,
-                    commitment_weighted: c_weighted.commitment,
-                    commitment_gate: c_gate.commitment,
-                    commitment_out: c_out.commitment,
-                    commitment_token_id: c_token_id.commitment,
-                    arity_src,
-                    arity_tgt,
-                    arity_gate,
-                    point_src,
-                    point_tgt,
-                    point_gate,
-                    point_token_id,
-                    opening_num_source: open_num_source,
-                    opening_den_source: open_den_source,
-                    opening_num_target: open_num_target,
-                    opening_den_target: open_den_target,
-                    opening_weighted: open_weighted,
-                    opening_gate: open_gate,
-                    opening_out: open_out,
-                    opening_token_id: open_token_id,
-                    eval_num_source: ev_num_source,
-                    eval_den_source: ev_den_source,
-                    eval_num_target: ev_num_target,
-                    eval_den_target: ev_den_target,
-                    eval_weighted: ev_weighted,
-                    eval_gate: ev_gate,
-                    eval_out: ev_out,
-                    eval_token_id: ev_token_id,
-                    alpha,
-                    gamma,
-                });
+    // Batch-open each group and fill locations in global order.
+    let mut group_idx_of: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+    for (gi, g) in gather_groups.iter().enumerate() {
+        group_idx_of.insert((g.arity, g.ty), gi);
+    }
+    let mut gather_locations_slots: Vec<Option<GatherLocation>> = (0..gather_ops.len()).map(|_| None).collect();
+    for (g_idx, g) in gather_groups.iter().enumerate() {
+        let n = g.ops.len();
+        let table_idxs: Vec<usize> = (0..n).collect();
+        let mut points = Vec::with_capacity(n);
+        let mut claimed = Vec::with_capacity(n);
+        for (ti, &(si, li)) in g.ops.iter().enumerate() {
+            let gid = gather_gid[&(si, li)];
+            let (_, _, _, _, _, h, _) = gather_ops[gid];
+            let h_log = h.trailing_zeros() as usize;
+            let sp = match &shards[si].ops[li] { OpProof::Gather(p) => p, _ => unreachable!() };
+            let (pt, cl) = match g.ty {
+                0 => (op_point_src[gid].clone(), mle::eval(&g.cols[ti], &op_point_src[gid])),
+                1 => (op_point_src[gid].clone(), mle::eval(&g.cols[ti], &op_point_src[gid])),
+                2 => (sp.r_prod_source.clone(), mle::eval(&g.cols[ti], &sp.r_prod_source)),
+                3 => (op_point_tgt[gid].clone(), mle::eval(&g.cols[ti], &op_point_tgt[gid])),
+                4 => (op_point_tgt[gid].clone(), mle::eval(&g.cols[ti], &op_point_tgt[gid])),
+                5 => (sp.r_prod_target.clone(), mle::eval(&g.cols[ti], &sp.r_prod_target)),
+                6 => (sp.r_prod_source[h_log..].to_vec(), mle::eval(&g.cols[ti], &sp.r_prod_source[h_log..].to_vec())),
+                _ => (op_point_src[gid][h_log..].to_vec(), mle::eval(&g.cols[ti], &op_point_src[gid][h_log..].to_vec())),
+            };
+            points.push(pt);
+            claimed.push(cl);
+            let loc = gather_locations_slots[gid].get_or_insert(GatherLocation {
+                num_source_batch: 0, num_source_table: 0,
+                den_source_batch: 0, den_source_table: 0,
+                weighted_batch: 0, weighted_table: 0,
+                num_target_batch: 0, num_target_table: 0,
+                den_target_batch: 0, den_target_table: 0,
+                out_batch: 0, out_table: 0,
+                gate_batch: 0, gate_table: 0,
+                token_id_batch: 0, token_id_table: 0,
+            });
+            match g.ty {
+                0 => { loc.num_source_batch = g_idx; loc.num_source_table = ti; }
+                1 => { loc.den_source_batch = g_idx; loc.den_source_table = ti; }
+                2 => { loc.weighted_batch = g_idx; loc.weighted_table = ti; }
+                3 => { loc.num_target_batch = g_idx; loc.num_target_table = ti; }
+                4 => { loc.den_target_batch = g_idx; loc.den_target_table = ti; }
+                5 => { loc.out_batch = g_idx; loc.out_table = ti; }
+                6 => { loc.gate_batch = g_idx; loc.gate_table = ti; }
+                _ => { loc.token_id_batch = g_idx; loc.token_id_table = ti; }
+            }
+        }
+        let proof = zkie_core::pcs::batch_open::prove_batch_open_committed(
+            &g.ctx, &table_idxs, &g.cols, &points, &claimed,
+        ).expect("honest gather batch-open");
+        gather_batch_openings.push(ColumnBatchOpening { table_idxs, points, claimed, proof });
+        for &(si, li) in &g.ops {
+            let sp = match &mut shards[si].ops[li] { OpProof::Gather(p) => p, _ => unreachable!() };
+            match g.ty {
+                0 => sp.num_source.clear(),
+                1 => sp.den_source.clear(),
+                2 => sp.weighted.clear(),
+                3 => sp.num_target.clear(),
+                4 => sp.den_target.clear(),
+                5 => sp.out.clear(),
+                6 => sp.gate.clear(),
+                _ => sp.token_id.clear(),
             }
         }
     }
+    gather_locations = gather_locations_slots.into_iter().map(|x| x.unwrap()).collect();
+
 
     CommittedShardDagProof {
         shards,
@@ -3496,8 +3734,13 @@ pub fn prove_committed_shard_dag(
         witness_locations,
         table_openings,
         sel_openings,
-        perm_openings,
-        gather_openings,
+        perm_batches,
+        perm_batch_openings,
+        perm_locations,
+        gather_batches,
+        gather_batch_openings,
+        gather_locations,
+        gather_indep_batches: gather_indep_count,
     }
 }
 
@@ -3654,62 +3897,103 @@ pub fn verify_committed_shard_dag(
             }
         }
     }
-    for po in &proof.perm_openings {
-        let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(po.arity, 90);
-        let bw = zkie_core::pcs::whir::Whir::with_params(po.arity, 90, pow_bits);
-        let protocol = bw.opening_protocol(po.arity, 1);
-        if bw.verify(&po.commitment_a, &po.opening_a, &protocol, &po.point_a).ok() != Some(po.eval_a) {
-            return false;
-        }
-        if bw.verify(&po.commitment_b, &po.opening_b, &protocol, &po.point_b).ok() != Some(po.eval_b) {
-            return false;
-        }
-        if bw.verify(&po.commitment_num, &po.opening_num_a, &protocol, &po.point_a).ok() != Some(po.num_leaf_a) {
-            return false;
-        }
-        if bw.verify(&po.commitment_num, &po.opening_num_b, &protocol, &po.point_b).ok() != Some(po.num_leaf_b) {
-            return false;
-        }
-        if po.den_leaf_a != po.alpha - po.eval_a {
-            return false;
-        }
-        if po.den_leaf_b != po.alpha - po.eval_b {
+    if proof.perm_batches.len() != proof.perm_batch_openings.len() {
+        return false;
+    }
+    {
+        let total: usize = proof.shards.iter().map(|s| s.ops.iter().filter(|o| matches!(o, OpProof::Scatter(_))).count()).sum();
+        if proof.perm_locations.len() != total {
             return false;
         }
     }
-    for go in &proof.gather_openings {
-        let src_bw = zkie_core::pcs::whir::Whir::with_params(go.arity_src, 90, zkie_core::pcs::whir::Whir::required_pow_bits(go.arity_src, 90));
-        let src_protocol = src_bw.opening_protocol(go.arity_src, 1);
-        if src_bw.verify(&go.commitment_num_source, &go.opening_num_source, &src_protocol, &go.point_src).ok() != Some(go.eval_num_source) {
+    for (bi, opening) in proof.perm_batch_openings.iter().enumerate() {
+        let batch = &proof.perm_batches[bi];
+        if opening.table_idxs.len() != opening.points.len()
+            || opening.table_idxs.len() != opening.claimed.len()
+        {
             return false;
         }
-        if src_bw.verify(&go.commitment_den_source, &go.opening_den_source, &src_protocol, &go.point_src).ok() != Some(go.eval_den_source) {
+        let protocol = batch.whir.opening_protocol(batch.arity, batch.num_tables);
+        if !zkie_core::pcs::batch_open::verify_batch_open_committed(
+            &batch.whir,
+            &batch.commitment,
+            &protocol,
+            batch.num_tables,
+            &opening.table_idxs,
+            &opening.points,
+            &opening.claimed,
+            &opening.proof,
+        ) {
             return false;
         }
-        if src_bw.verify(&go.commitment_weighted, &go.opening_weighted, &src_protocol, &go.point_src).ok() != Some(go.eval_weighted) {
+    }
+    {
+        let mut gid = 0usize;
+        for shard in &proof.shards {
+            for op in &shard.ops {
+                if let OpProof::Scatter(sp) = op {
+                    let loc = &proof.perm_locations[gid];
+                    let (_, num_leaf_a, den_leaf_a) = fractional_leaf(&sp.perm.a_side);
+                    let (_, num_leaf_b, den_leaf_b) = fractional_leaf(&sp.perm.b_side);
+                    let eval_a = proof.perm_batch_openings[loc.a_batch].claimed[loc.a_table];
+                    let eval_b = proof.perm_batch_openings[loc.b_batch].claimed[loc.b_table];
+                    let nl_a = proof.perm_batch_openings[loc.num_batch].claimed[2 * loc.num_table];
+                    let nl_b = proof.perm_batch_openings[loc.num_batch].claimed[2 * loc.num_table + 1];
+                    if nl_a != num_leaf_a || nl_b != num_leaf_b {
+                        return false;
+                    }
+                    if den_leaf_a != sp.perm.alpha - eval_a || den_leaf_b != sp.perm.alpha - eval_b {
+                        return false;
+                    }
+                    gid += 1;
+                }
+            }
+        }
+    }
+    if proof.gather_batches.len() != proof.gather_batch_openings.len() {
+        return false;
+    }
+    {
+        let total: usize = proof.shards.iter().map(|s| s.ops.iter().filter(|o| matches!(o, OpProof::Gather(_))).count()).sum();
+        if proof.gather_locations.len() != total {
             return false;
         }
-        let tgt_bw = zkie_core::pcs::whir::Whir::with_params(go.arity_tgt, 90, zkie_core::pcs::whir::Whir::required_pow_bits(go.arity_tgt, 90));
-        let tgt_protocol = tgt_bw.opening_protocol(go.arity_tgt, 1);
-        if tgt_bw.verify(&go.commitment_num_target, &go.opening_num_target, &tgt_protocol, &go.point_tgt).ok() != Some(go.eval_num_target) {
+    }
+    for (bi, opening) in proof.gather_batch_openings.iter().enumerate() {
+        let batch = &proof.gather_batches[bi];
+        if opening.table_idxs.len() != opening.points.len()
+            || opening.table_idxs.len() != opening.claimed.len()
+        {
             return false;
         }
-        if tgt_bw.verify(&go.commitment_den_target, &go.opening_den_target, &tgt_protocol, &go.point_tgt).ok() != Some(go.eval_den_target) {
+        let protocol = batch.whir.opening_protocol(batch.arity, batch.num_tables);
+        if !zkie_core::pcs::batch_open::verify_batch_open_committed(
+            &batch.whir,
+            &batch.commitment,
+            &protocol,
+            batch.num_tables,
+            &opening.table_idxs,
+            &opening.points,
+            &opening.claimed,
+            &opening.proof,
+        ) {
             return false;
         }
-        if tgt_bw.verify(&go.commitment_out, &go.opening_out, &tgt_protocol, &go.point_tgt).ok() != Some(go.eval_out) {
-            return false;
-        }
-        let gate_bw = zkie_core::pcs::whir::Whir::with_params(go.arity_gate, 90, zkie_core::pcs::whir::Whir::required_pow_bits(go.arity_gate, 90));
-        let gate_protocol = gate_bw.opening_protocol(go.arity_gate, 1);
-        if gate_bw.verify(&go.commitment_gate, &go.opening_gate, &gate_protocol, &go.point_gate).ok() != Some(go.eval_gate) {
-            return false;
-        }
-        if gate_bw.verify(&go.commitment_token_id, &go.opening_token_id, &gate_protocol, &go.point_token_id).ok() != Some(go.eval_token_id) {
-            return false;
-        }
-        if go.eval_den_source != go.alpha - go.eval_token_id {
-            return false;
+    }
+    {
+        let mut gid = 0usize;
+        for shard in &proof.shards {
+            for op in &shard.ops {
+                if let OpProof::Gather(sp) = op {
+                    let loc = &proof.gather_locations[gid];
+                    let den_source = proof.gather_batch_openings[loc.den_source_batch].claimed[loc.den_source_table];
+                    let token_id = proof.gather_batch_openings[loc.token_id_batch].claimed[loc.token_id_table];
+                    if den_source != sp.alpha - token_id {
+                        return false;
+                    }
+                    gid += 1;
+                }
+            }
         }
     }
 
@@ -3795,26 +4079,23 @@ pub fn verify_committed_shard_dag(
 
     // Fiat-Shamir for permutations: verify alpha/full_r/c are transcript-derived.
     {
-        let mut pi = 0usize;
-        let pr = shard_ranges(ops.len(), ops_per_shard);
-        for (si, &(s, e)) in pr.iter().enumerate() {
-            for (op, op_proof) in ops[s..e].iter().zip(proof.shards[si].ops.iter()) {
-                if let (Op::Scatter { .. }, OpProof::Scatter(sp)) = (op, op_proof) {
-                    let po = &proof.perm_openings[pi];
-                    let mut ts = Transcript::new(b"zkie-committed-perm-v1");
-                    absorb_statement(&mut ts, ops, ops_per_shard);
-                    ts.absorb_u64(si as u64);
-                    ts.absorb(&bincode::serialize(&po.commitment_a).unwrap());
-                    ts.absorb(&bincode::serialize(&po.commitment_b).unwrap());
-                    ts.absorb(&bincode::serialize(&po.commitment_num).unwrap());
+        let mut ts = Transcript::new(b"zkie-committed-perm-v1");
+        absorb_statement(&mut ts, ops, ops_per_shard);
+        for batch in &proof.perm_batches {
+            ts.absorb(&bincode::serialize(&batch.commitment).unwrap());
+        }
+        for shard in &proof.shards {
+            for op in &shard.ops {
+                if let OpProof::Scatter(sp) = op {
+                    let arity = sp.perm.a_side.full_r.len();
                     let alpha = ts.field();
-                    if alpha != po.alpha || alpha != sp.perm.alpha {
+                    if alpha != sp.perm.alpha {
                         return false;
                     }
-                    let full_r_a = ts.field_vec(po.arity);
-                    let cs_a = ts.field_vec(po.arity);
-                    let full_r_b = ts.field_vec(po.arity);
-                    let cs_b = ts.field_vec(po.arity);
+                    let full_r_a = ts.field_vec(arity);
+                    let cs_a = ts.field_vec(arity);
+                    let full_r_b = ts.field_vec(arity);
+                    let cs_b = ts.field_vec(arity);
                     if sp.perm.a_side.full_r != full_r_a || sp.perm.a_side.layers.len() != cs_a.len() {
                         return false;
                     }
@@ -3831,37 +4112,44 @@ pub fn verify_committed_shard_dag(
                             return false;
                         }
                     }
-                    pi += 1;
                 }
             }
         }
     }
 
-    // Fiat-Shamir for gather: verify alpha/gamma are transcript-derived.
+    // Fiat-Shamir for gather: verify alpha/gamma are transcript-derived. The
+    // den columns are committed after alpha (they depend on it), so the
+    // transcript absorbs the independent roots, derives alpha/gamma, then
+    // absorbs the den roots.
     {
-        let mut gi = 0usize;
-        let gr = shard_ranges(ops.len(), ops_per_shard);
-        for (si, &(s, e)) in gr.iter().enumerate() {
-            for (op, op_proof) in ops[s..e].iter().zip(proof.shards[si].ops.iter()) {
-                if let (Op::Gather { h, .. }, OpProof::Gather(sp)) = (op, op_proof) {
-                    let go = &proof.gather_openings[gi];
-                    let mut ts = Transcript::new(b"zkie-committed-gather-v1");
-                    absorb_statement(&mut ts, ops, ops_per_shard);
-                    ts.absorb_u64(si as u64);
-                    ts.absorb(&bincode::serialize(&go.commitment_num_source).unwrap());
-                    ts.absorb(&bincode::serialize(&go.commitment_den_source).unwrap());
-                    ts.absorb(&bincode::serialize(&go.commitment_num_target).unwrap());
-                    ts.absorb(&bincode::serialize(&go.commitment_den_target).unwrap());
-                    ts.absorb(&bincode::serialize(&go.commitment_weighted).unwrap());
-                    ts.absorb(&bincode::serialize(&go.commitment_out).unwrap());
-                    ts.absorb(&bincode::serialize(&go.commitment_gate).unwrap());
-                    ts.absorb(&bincode::serialize(&go.commitment_token_id).unwrap());
+        let mut ts = Transcript::new(b"zkie-committed-gather-v1");
+        absorb_statement(&mut ts, ops, ops_per_shard);
+        for batch in proof.gather_batches.iter().take(proof.gather_indep_batches) {
+            ts.absorb(&bincode::serialize(&batch.commitment).unwrap());
+        }
+        for shard in &proof.shards {
+            for op in &shard.ops {
+                if let OpProof::Gather(sp) = op {
                     let alpha = ts.field();
-                    let gamma: Vec<Goldilocks> = (0..*h).map(|_| ts.field()).collect();
-                    if alpha != go.alpha || alpha != sp.alpha || gamma != go.gamma || gamma != sp.gamma {
+                    let gamma: Vec<Goldilocks> = (0..sp.gamma.len()).map(|_| ts.field()).collect();
+                    if alpha != sp.alpha || gamma != sp.gamma {
                         return false;
                     }
-                    gi += 1;
+                }
+            }
+        }
+        for batch in proof.gather_batches.iter().skip(proof.gather_indep_batches) {
+            ts.absorb(&bincode::serialize(&batch.commitment).unwrap());
+        }
+        for shard in &proof.shards {
+            for op in &shard.ops {
+                if let OpProof::Gather(sp) = op {
+                    let arity_src = sp.source_side.full_r.len();
+                    let arity_tgt = sp.target_side.full_r.len();
+                    let _ = ts.field_vec(arity_src);
+                    let _ = ts.field_vec(arity_src);
+                    let _ = ts.field_vec(arity_tgt);
+                    let _ = ts.field_vec(arity_tgt);
                 }
             }
         }
