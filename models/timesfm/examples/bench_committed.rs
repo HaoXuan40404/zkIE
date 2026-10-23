@@ -23,6 +23,8 @@ fn main() {
     let mut store = Store::new();
     let mut ops = Vec::new();
     let _out = build_timesfm(&mut store, &mut ops, dir, 16);
+    let tokens = store.push_idx(vec![]);
+    let argmax = store.push_idx(vec![]);
     println!("total ops: {}", ops.len());
 
     // Boundary tensors are seq x H_PAD = 16 x 2048 = 2^15.
@@ -34,7 +36,7 @@ fn main() {
     let commit_t = t0.elapsed();
 
     let t1 = std::time::Instant::now();
-    let proof = prove_committed_shard_dag(&mut store, &ops, 108, &whir, &cached, &mut rng);
+    let proof = prove_committed_shard_dag(&mut store, &ops, 108, &whir, &cached, &mut rng, tokens, argmax);
     let prove_t = t1.elapsed();
 
     let t2 = std::time::Instant::now();

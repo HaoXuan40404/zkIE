@@ -85,6 +85,7 @@ fn build_layer(
     shift: u32,
     exp_t: usize,
     rsqrt_t: usize,
+    limb_t: usize,
     silu_t: usize,
     q_scale_t: usize,
     mask_t: usize,
@@ -110,6 +111,7 @@ fn build_layer(
         w: lnw_t,
         out: h,
         rsqrt_table: rsqrt_t,
+        limb_table: limb_t,
         m: SEQ,
         d: H_PAD,
         n_real: H,
@@ -350,6 +352,7 @@ pub fn build_timesfm(store: &mut Store, ops: &mut Vec<Op>, dir: &str, shift: u32
 
     let exp_t = store.push(exp_table);
     let rsqrt_t = store.push(rsqrt_table);
+    let limb_t = store.push((0..(1usize << 16)).map(|j| Goldilocks::from_u64(j as u64)).collect::<Vec<_>>());
     let silu_t = store.push(silu_table);
     let q_scale_t = store.push(q_scale);
     let mask_t = store.push(mask);
@@ -434,7 +437,7 @@ pub fn build_timesfm(store: &mut Store, ops: &mut Vec<Op>, dir: &str, shift: u32
     let mut x_cur = x1;
     for layer in 0..LAYERS {
         x_cur = build_layer(
-            store, ops, x_cur, layer, shift, exp_t, rsqrt_t, silu_t, q_scale_t, mask_t,
+            store, ops, x_cur, layer, shift, exp_t, rsqrt_t, limb_t, silu_t, q_scale_t, mask_t,
         );
     }
 
