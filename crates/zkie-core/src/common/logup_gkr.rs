@@ -14,6 +14,7 @@ pub struct FractionalProof {
     pub layers: Vec<FractionalLayer>,
     pub final_num: Goldilocks,
     pub final_den: Goldilocks,
+    pub full_r: Vec<Goldilocks>,
 }
 fn build_terms(c: Goldilocks) -> Vec<(Goldilocks, Vec<usize>)> {
     let neg = from_i64(-1);
@@ -61,6 +62,7 @@ pub fn prove_fractional(
         layers,
         final_num: num[0],
         final_den: den[0],
+        full_r,
     }
 }
 pub fn verify_fractional(
@@ -160,6 +162,20 @@ pub fn verify_fractional_storefree(proof: &FractionalProof, claimed: Goldilocks)
         }
     }
     proof.final_num == claimed * proof.final_den
+}
+
+// Leaf of the chained GKR: recover eval(num_0, full_r) and eval(den_0, full_r)
+// from the first layer final_evals by folding the peeled top variable. These are
+// the only two values that must be opened against the committed num_0/den_0
+// columns in P2/P3.
+pub fn fractional_leaf(proof: &FractionalProof) -> (Vec<Goldilocks>, Goldilocks, Goldilocks) {
+    let one = Goldilocks::from_u64(1);
+    let top = *proof.full_r.last().unwrap();
+    let num_leaf = (one - top) * proof.layers[0].proof.final_evals[3]
+        + top * proof.layers[0].proof.final_evals[4];
+    let den_leaf = (one - top) * proof.layers[0].proof.final_evals[5]
+        + top * proof.layers[0].proof.final_evals[6];
+    (proof.full_r.clone(), num_leaf, den_leaf)
 }
 
 /// Prove `y_i == table[x_i]` for every `i` via the fractional-sumcheck logUp:
@@ -316,6 +332,7 @@ mod tests {
             final_num: proof.final_num + Goldilocks::from_u64(1),
             final_den: proof.final_den,
             layers: proof.layers,
+            full_r: proof.full_r,
         };
         assert!(!verify_fractional(
             &tampered,
