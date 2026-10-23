@@ -2804,6 +2804,28 @@ pub fn prove_committed_shard_dag(
     let mut shards = plain.shards;
     let mut witness_openings = Vec::new();
     let mut table_openings = Vec::new();
+
+    // Commit each distinct lookup table body exactly once (not per shard):
+    // the table is a global public parameter, only its openings are per-shard.
+    let mut global_table_commits: std::collections::BTreeMap<
+        T,
+        (usize, zkie_core::pcs::committed::Committed),
+    > = std::collections::BTreeMap::new();
+    for shard in &shards {
+        for tc in &shard.table_columns {
+            if !global_table_commits.contains_key(&tc.table) {
+                let table_pad = pad_table(store.get(tc.table));
+                let arity = table_pad.len().trailing_zeros() as usize;
+                let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
+                let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
+                global_table_commits.insert(
+                    tc.table,
+                    (arity, zkie_core::pcs::committed::commit(&bw, &table_pad)),
+                );
+            }
+        }
+    }
+
     for (si, shard) in shards.iter_mut().enumerate() {
         // Phase 1: commit witness x/y/num and table m/table (keep prover data).
         let mut w_arity: Vec<usize> = Vec::new();
@@ -2821,7 +2843,6 @@ pub fn prove_committed_shard_dag(
         }
         let mut t_arity: Vec<usize> = Vec::new();
         let mut t_cm: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
-        let mut t_ctable: Vec<zkie_core::pcs::committed::Committed> = Vec::new();
         for tc in &shard.table_columns {
             let total = tc.m.len().next_power_of_two();
             let arity = total.trailing_zeros() as usize;
@@ -2833,8 +2854,6 @@ pub fn prove_committed_shard_dag(
             let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
             t_arity.push(arity);
             t_cm.push(zkie_core::pcs::committed::commit(&bw, &m_pad));
-            let table_pad = pad_table(store.get(tc.table));
-            t_ctable.push(zkie_core::pcs::committed::commit(&bw, &table_pad));
         }
 
         // Phase 2: Fiat-Shamir transcript absorbs the statement and every
@@ -2849,7 +2868,8 @@ pub fn prove_committed_shard_dag(
         }
         for i in 0..t_arity.len() {
             ts.absorb(&bincode::serialize(&t_cm[i].commitment).unwrap());
-            ts.absorb(&bincode::serialize(&t_ctable[i].commitment).unwrap());
+            let (_, gc) = &global_table_commits[&shard.table_columns[i].table];
+            ts.absorb(&bincode::serialize(&gc.commitment).unwrap());
         }
         let mut alphas: Vec<Goldilocks> = Vec::new();
         let mut betas: Vec<Goldilocks> = Vec::new();
@@ -2926,7 +2946,14 @@ pub fn prove_committed_shard_dag(
             let bw = zkie_core::pcs::whir::Whir::with_params(t_arity[i], 90, pow_bits);
             let (open, ev) = bw.open(t_cm[i].prover_data.clone(), &t_cm[i].protocol, &point);
             assert_eq!(ev, num_leaf);
-            let (open_table, ev_table) = bw.open(t_ctable[i].prover_data.clone(), &t_ctable[i].protocol, &point);
+            let (table_arity, table_committed) = &global_table_commits[&tc.table];
+            let table_bw = zkie_core::pcs::whir::Whir::with_params(
+                *table_arity,
+                90,
+                zkie_core::pcs::whir::Whir::required_pow_bits(*table_arity, 90),
+            );
+            let (open_table, ev_table) =
+                table_bw.open(table_committed.prover_data.clone(), &table_committed.protocol, &point);
             tc.proof = new_proof;
             tc.point = point.clone();
             tc.num_leaf = num_leaf;
@@ -2937,7 +2964,7 @@ pub fn prove_committed_shard_dag(
                 arity: t_arity[i],
                 point,
                 claimed: num_leaf,
-                table_commitment: t_ctable[i].commitment.clone(),
+                table_commitment: table_committed.commitment.clone(),
                 table_opening: open_table,
                 table_eval: ev_table,
                 alpha,
