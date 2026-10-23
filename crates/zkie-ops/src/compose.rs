@@ -924,10 +924,6 @@ pub struct OpShardProof {
     pub rsqrt_lookup: Option<FractionalProof>,
     pub rsqrt_alpha: Goldilocks,
     pub rsqrt_beta: Goldilocks,
-    /// Batched softmax exp lookup (one sumcheck for every Softmax in this shard).
-    pub softmax_lookup: Option<FractionalProof>,
-    pub softmax_alpha: Goldilocks,
-    pub softmax_beta: Goldilocks,
     /// `binds[j]` merges the claims of tensor `bound[j]`.
     pub bound: Vec<T>,
     pub binds: Vec<SamePolyProof>,
@@ -1611,9 +1607,6 @@ pub fn prove_shard_precomputed(
     let mut claims: Vec<(T, Vec<Goldilocks>, Goldilocks)> = Vec::new();
     let mut op_proofs = Vec::with_capacity(ops.len());
     let mut rsqrt_table_id: Option<T> = None;
-    let mut softmax_idx: Vec<&[u32]> = Vec::new();
-    let mut softmax_vals: Vec<&[Goldilocks]> = Vec::new();
-    let mut softmax_table_id: Option<T> = None;
     let mut lookup_by_table: std::collections::BTreeMap<T, Vec<(Vec<u32>, Vec<Goldilocks>)>> =
         std::collections::BTreeMap::new();
 
@@ -1818,9 +1811,10 @@ pub fn prove_shard_precomputed(
                     p.r_scale.clone(),
                     mle::eval(store.get(out), &p.r_scale),
                 ));
-                softmax_idx.push(&store.idx[idx]);
-                softmax_vals.push(store.get(e));
-                softmax_table_id = Some(table);
+                lookup_by_table
+                    .entry(table)
+                    .or_insert(Vec::new())
+                    .push((store.idx[idx].clone(), store.get(e).to_vec()));
                 op_proofs.push(OpProof::Softmax(p));
             }
             Op::SoftmaxIndex { .. } => {
@@ -2030,17 +2024,6 @@ pub fn prove_shard_precomputed(
         let pr = prove_lookup_fractional_batch(&rsqrt_idx, &rsqrt_vals, store.get(tid), a, b, rng);
         (Some(pr), a, b)
     };
-    let (softmax_lookup, softmax_alpha, softmax_beta) = if softmax_idx.is_empty() {
-        (None, Goldilocks::ZERO, Goldilocks::ZERO)
-    } else {
-        let a = rng.field();
-        let b = rng.field();
-        let tid = softmax_table_id.expect("softmax table");
-        let pr =
-            prove_lookup_fractional_batch(&softmax_idx, &softmax_vals, store.get(tid), a, b, rng);
-        (Some(pr), a, b)
-    };
-
     let mut witness_columns = Vec::new();
     let mut table_columns = Vec::new();
     for (table, lookups) in &lookup_by_table {
@@ -2080,9 +2063,6 @@ pub fn prove_shard_precomputed(
         rsqrt_lookup,
         rsqrt_alpha,
         rsqrt_beta,
-        softmax_lookup,
-        softmax_alpha,
-        softmax_beta,
         bound,
         binds,
         claims: raw_claims,
@@ -2113,9 +2093,6 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
     let mut rsqrt_idx: Vec<Vec<u32>> = Vec::new();
     let mut rsqrt_vals: Vec<Vec<Goldilocks>> = Vec::new();
     let mut rsqrt_table_id: Option<T> = None;
-    let mut softmax_idx: Vec<Vec<u32>> = Vec::new();
-    let mut softmax_vals: Vec<Vec<Goldilocks>> = Vec::new();
-    let mut softmax_table_id: Option<T> = None;
     for (op, p) in ops.iter().zip(&proof.ops) {
         match (op, p) {
             (Op::Transpose { .. }, OpProof::Transpose) => {
@@ -2181,13 +2158,10 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                     _ => return false,
                 }
             }
-            (Op::Softmax { table, .. }, OpProof::Softmax(sp)) => {
+            (Op::Softmax { .. }, OpProof::Softmax(sp)) => {
                 if !verify_softmax_rounded(sp) {
                     return false;
                 }
-                softmax_idx.push(sp.indices.clone());
-                softmax_vals.push(sp.e.clone());
-                softmax_table_id = Some(*table);
             }
             (Op::SoftmaxIndex { .. }, OpProof::SoftmaxIndex) => {
                 // No proof: the verifier recomputes `idx = softmax_index(scores)`.
@@ -2273,23 +2247,6 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
             return false;
         }
     } else if !rsqrt_idx.is_empty() {
-        return false;
-    }
-    if let Some(sp) = &proof.softmax_lookup {
-        let tid = softmax_table_id.expect("softmax table");
-        let refs_idx: Vec<&[u32]> = softmax_idx.iter().map(|v| v.as_slice()).collect();
-        let refs_vals: Vec<&[Goldilocks]> = softmax_vals.iter().map(|v| v.as_slice()).collect();
-        if !verify_lookup_fractional_batch(
-            sp,
-            &refs_idx,
-            &refs_vals,
-            tables[tid],
-            proof.softmax_alpha,
-            proof.softmax_beta,
-        ) {
-            return false;
-        }
-    } else if !softmax_idx.is_empty() {
         return false;
     }
     true

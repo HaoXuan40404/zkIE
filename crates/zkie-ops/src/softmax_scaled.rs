@@ -36,8 +36,6 @@ pub struct SoftmaxRoundedProof {
     pub r_sum: Vec<Goldilocks>,
     pub sum_ch: Vec<Goldilocks>,
     pub r_scale: Vec<Goldilocks>,
-    pub indices: Vec<u32>,
-    pub e: Vec<Goldilocks>,
     pub claimed: Goldilocks,
 }
 
@@ -106,8 +104,6 @@ pub fn prove_softmax_rounded(
         r_sum,
         sum_ch,
         r_scale,
-        indices: indices.to_vec(),
-        e: e.to_vec(),
         claimed,
     }
 }
