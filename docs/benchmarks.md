@@ -516,5 +516,5 @@ Measured on `b2ddac3`, release build, 64-thread CPU, 12 shards (expert-major).
 | model | seq | prove | verify | argmax | peak RSS |
 | --- | --- | --- | --- | --- | --- |
 | DeepSeek-V2-Lite | 16 | 358.7 s | 55.5 s | 16/16 | ~143 GB |
-| DeepSeek-V2-Lite | 512 | 5500.5 s | pending | 511/512 | ~207 GB |
+| DeepSeek-V2-Lite | 512 | 5640.0 s | 72.1 s | 511/512 | ~207 GB |
 
