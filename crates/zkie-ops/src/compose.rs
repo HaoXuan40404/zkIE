@@ -30,7 +30,8 @@ use zkie_core::common::fixed_point::{from_i64, to_i64};
 use zkie_core::common::logup_gkr::{
     prove_lookup_fractional, prove_lookup_fractional_batch, prove_lookup_fractional_columns,
     verify_lookup_fractional, verify_lookup_fractional_batch, verify_lookup_fractional_chain,
-    fractional_leaf, FractionalProof,
+    fractional_leaf, merge_multiplicity, prove_lookup_table, prove_lookup_witness_batch_columns,
+    verify_lookup_split, FractionalProof,
 };
 use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, MatmulProof};
 use zkie_core::common::batched_matmul::{self as bmm, BatchedMatmulProof};
@@ -797,7 +798,7 @@ pub enum OpProof {
     ),
     Projection(ProjectionProof),
     Add(VirtualProof, Vec<Goldilocks>),
-    Lookup(FractionalProof),
+    Lookup,
     Softmax(SoftmaxRoundedProof),
     SoftmaxIndex,
     GeluIndex,
@@ -891,6 +892,7 @@ pub fn rsqrt_index(var: i64) -> u32 {
 /// the committed path.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct WitnessColumn {
+    pub proof: FractionalProof,
     pub num: Vec<Goldilocks>,
     pub den: Vec<Goldilocks>,
     pub point: Vec<Goldilocks>,
@@ -903,6 +905,7 @@ pub struct WitnessColumn {
 /// point, committed once per table globally in the committed path.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct TableColumn {
+    pub proof: FractionalProof,
     pub table: T,
     pub m: Vec<u64>,
     pub point: Vec<Goldilocks>,
@@ -1607,7 +1610,8 @@ pub fn prove_shard_precomputed(
     let mut softmax_idx: Vec<&[u32]> = Vec::new();
     let mut softmax_vals: Vec<&[Goldilocks]> = Vec::new();
     let mut softmax_table_id: Option<T> = None;
-    let mut witness_columns: Vec<WitnessColumn> = Vec::new();
+    let mut lookup_by_table: std::collections::BTreeMap<T, Vec<(Vec<u32>, Vec<Goldilocks>)>> =
+        std::collections::BTreeMap::new();
 
     for op in ops {
         match *op {
@@ -1782,26 +1786,11 @@ pub fn prove_shard_precomputed(
                 op_proofs.push(OpProof::Add(proof, r));
             }
             Op::Lookup { idx, out, table } => {
-                let alpha = rng.field();
-                let beta = rng.field();
-                let (p, num, den) = prove_lookup_fractional_columns(
-                    &store.idx[idx],
-                    store.get(out),
-                    store.get(table),
-                    alpha,
-                    beta,
-                    rng,
-                );
-                let (point, num_leaf, den_leaf) = fractional_leaf(&p);
-                witness_columns.push(WitnessColumn {
-                    num,
-                    den,
-                    point,
-                    num_leaf,
-                    den_leaf,
-                    table,
-                });
-                op_proofs.push(OpProof::Lookup(p));
+                lookup_by_table
+                    .entry(table)
+                    .or_insert(Vec::new())
+                    .push((store.idx[idx].clone(), store.get(out).to_vec()));
+                op_proofs.push(OpProof::Lookup);
             }
             Op::Softmax {
                 idx,
@@ -2048,6 +2037,37 @@ pub fn prove_shard_precomputed(
         (Some(pr), a, b)
     };
 
+    let mut witness_columns = Vec::new();
+    let mut table_columns = Vec::new();
+    for (table, lookups) in &lookup_by_table {
+        let alpha = rng.field();
+        let beta = rng.field();
+        let xs: Vec<&[u32]> = lookups.iter().map(|(x, _)| x.as_slice()).collect();
+        let ys: Vec<&[Goldilocks]> = lookups.iter().map(|(_, y)| y.as_slice()).collect();
+        let (proof, num, den) = prove_lookup_witness_batch_columns(&xs, &ys, alpha, beta, rng);
+        let (point, num_leaf, den_leaf) = fractional_leaf(&proof);
+        let m = merge_multiplicity(&xs, store.get(*table).len());
+        let table_proof = prove_lookup_table(&m, store.get(*table), alpha, beta, rng);
+        let (point_t, num_leaf_t, den_leaf_t) = fractional_leaf(&table_proof);
+        witness_columns.push(WitnessColumn {
+            proof,
+            num,
+            den,
+            point,
+            num_leaf,
+            den_leaf,
+            table: *table,
+        });
+        table_columns.push(TableColumn {
+            proof: table_proof,
+            table: *table,
+            m,
+            point: point_t,
+            num_leaf: num_leaf_t,
+            den_leaf: den_leaf_t,
+        });
+    }
+
     OpShardProof {
         ops: op_proofs,
         rsqrt_lookup,
@@ -2060,7 +2080,7 @@ pub fn prove_shard_precomputed(
         binds,
         claims: raw_claims,
         witness_columns,
-        table_columns: Vec::new(),
+        table_columns,
     }
 }
 
@@ -2142,9 +2162,16 @@ pub fn verify_shard_precomputed(tables: &[&[Goldilocks]], ops: &[Op], proof: &Op
                     return false;
                 }
             }
-            (Op::Lookup { .. }, OpProof::Lookup(fp)) => {
-                if !verify_lookup_fractional_chain(fp) {
-                    return false;
+            (Op::Lookup { table, .. }, OpProof::Lookup) => {
+                let w = proof.witness_columns.iter().find(|w| w.table == *table);
+                let t = proof.table_columns.iter().find(|t| t.table == *table);
+                match (w, t) {
+                    (Some(w), Some(t)) => {
+                        if !verify_lookup_split(&w.proof, &t.proof) {
+                            return false;
+                        }
+                    }
+                    _ => return false,
                 }
             }
             (Op::Softmax { table, .. }, OpProof::Softmax(sp)) => {
@@ -2822,7 +2849,7 @@ pub fn prove_committed_shard_dag(
     let mut shards = plain.shards;
     let mut witness_openings = Vec::new();
     for shard in &mut shards {
-        for wc in &shard.witness_columns {
+        for wc in &mut shard.witness_columns {
             let arity = wc.num.len().trailing_zeros() as usize;
             let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(arity, 90);
             let bw = zkie_core::pcs::whir::Whir::with_params(arity, 90, pow_bits);
@@ -2842,8 +2869,12 @@ pub fn prove_committed_shard_dag(
                 num_leaf: wc.num_leaf,
                 den_leaf: wc.den_leaf,
             });
+            wc.num.clear();
+            wc.den.clear();
         }
-        shard.witness_columns.clear();
+        for tc in &mut shard.table_columns {
+            tc.m.clear();
+        }
     }
 
     CommittedShardDagProof {
@@ -5156,7 +5187,7 @@ mod tests {
             OpProof::MatMul(..)
             | OpProof::Projection(..)
             | OpProof::Add(..)
-            | OpProof::Lookup(..)
+            | OpProof::Lookup
             | OpProof::Softmax(..)
             | OpProof::Layernorm(..)
             | OpProof::LayerNormCentered(..)
