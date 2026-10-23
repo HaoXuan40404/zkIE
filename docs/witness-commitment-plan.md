@@ -97,3 +97,5 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 - Each op witness bytes drop to ~K level (bench_committed breakdown).
 - Tamper claim / opening / wrong table root / wrong witness root => reject.
 - GPT-2 seq16 (16/16) and seq512 (511/512) argmax unchanged; prove/verify not slower than current committed baseline.
+
+- Table-side multiplicity m committed + opened per table (per-shape, no cross-shape merge, per user: batch only same-shape). GPT-2 seq16: prove 36.4s -> 51.48s, verify 2.05s, proof 21.1MB -> 22.86MB, rss ~14.5GB, argmax 16/16.
