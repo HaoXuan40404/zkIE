@@ -601,6 +601,38 @@ mod tests {
         assert!(verify_lookup_split(&witness, &table_proof));
     }
     #[test]
+    fn lookup_table_commit_open_matches_leaf() {
+        use crate::pcs::committed::commit;
+        use crate::pcs::whir::Whir;
+        let mut rng = XorShift64::new(0x7AB1E);
+        let t = 64usize;
+        let table: Vec<Goldilocks> = (0..t).map(|_| rng.field()).collect();
+        let m: Vec<u64> = (0..t).map(|_| rng.next_u64() % 5).collect();
+        let alpha = rng.field();
+        let beta = rng.field();
+        let table_proof = prove_lookup_table(&m, &table, alpha, beta, &mut rng);
+        let (full_r, num_leaf, den_leaf) = fractional_leaf(&table_proof);
+        let total = t.next_power_of_two();
+        let arity = total.trailing_zeros() as usize;
+        let mut m_pad = vec![Goldilocks::from_u64(0); total];
+        let mut table_pad = vec![Goldilocks::from_u64(0); total];
+        for j in 0..t {
+            m_pad[j] = Goldilocks::from_u64(m[j]);
+            table_pad[j] = table[j];
+        }
+        let whir = Whir::new_testing(arity);
+        let c_m = commit(&whir, &m_pad);
+        let (open_m, ev_m) = whir.open(c_m.prover_data.clone(), &c_m.protocol, &full_r);
+        assert_eq!(whir.verify(&c_m.commitment, &open_m, &c_m.protocol, &full_r).unwrap(), ev_m);
+        assert_eq!(ev_m, num_leaf);
+        let c_t = commit(&whir, &table_pad);
+        let (open_t, ev_t) = whir.open(c_t.prover_data.clone(), &c_t.protocol, &full_r);
+        assert_eq!(whir.verify(&c_t.commitment, &open_t, &c_t.protocol, &full_r).unwrap(), ev_t);
+        let j_mle: Vec<Goldilocks> = (0..total).map(|j| Goldilocks::from_u64(j as u64)).collect();
+        let expected_den = alpha + crate::common::mle::eval(&j_mle, &full_r) + beta * ev_t;
+        assert_eq!(den_leaf, expected_den);
+    }
+    #[test]
     fn committed_lookup_roundtrip() {
         use crate::pcs::committed::commit;
         use crate::pcs::whir::Whir;
