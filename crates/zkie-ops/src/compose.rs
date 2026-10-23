@@ -28,8 +28,9 @@ use rayon::prelude::*;
 use zkie_core::common::field::{Field, Goldilocks, PrimeCharacteristicRing, XorShift64, ChallengeSource};
 use zkie_core::common::fixed_point::{from_i64, to_i64};
 use zkie_core::common::logup_gkr::{
-    prove_lookup_fractional, prove_lookup_fractional_batch, verify_lookup_fractional,
-    verify_lookup_fractional_batch, verify_lookup_fractional_chain, FractionalProof,
+    prove_lookup_fractional, prove_lookup_fractional_batch, prove_lookup_fractional_columns,
+    verify_lookup_fractional, verify_lookup_fractional_batch, verify_lookup_fractional_chain,
+    fractional_leaf, FractionalProof,
 };
 use zkie_core::common::matmul::{prove as matmul_prove, verify as matmul_verify, MatmulProof};
 use zkie_core::common::batched_matmul::{self as bmm, BatchedMatmulProof};
@@ -885,6 +886,18 @@ pub fn rsqrt_index(var: i64) -> u32 {
 
 /// A shard proof: per-op proofs plus the `same_poly` bindings on every
 /// multiply-consumed activation tensor.
+/// A lookup witness column pair (merged num_0/den_0) plus its chained-GKR
+/// leaf claim, collected by the plain prover and batch-committed/opened by
+/// the committed path.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct WitnessColumn {
+    pub num: Vec<Goldilocks>,
+    pub den: Vec<Goldilocks>,
+    pub point: Vec<Goldilocks>,
+    pub num_leaf: Goldilocks,
+    pub den_leaf: Goldilocks,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct OpShardProof {
     pub ops: Vec<OpProof>,
@@ -902,6 +915,7 @@ pub struct OpShardProof {
     /// Raw `(tensor, point, eval)` claims emitted by this shard's ops, used by
     /// the shard-DAG composer for cross-shard binding.
     pub claims: Vec<(T, Vec<Goldilocks>, Goldilocks)>,
+    pub witness_columns: Vec<WitnessColumn>,
 }
 
 /// Run the forward pass for all ops; materializes every `out`/`rem`/`c` into the
@@ -1580,6 +1594,7 @@ pub fn prove_shard_precomputed(
     let mut softmax_idx: Vec<&[u32]> = Vec::new();
     let mut softmax_vals: Vec<&[Goldilocks]> = Vec::new();
     let mut softmax_table_id: Option<T> = None;
+    let mut witness_columns: Vec<WitnessColumn> = Vec::new();
 
     for op in ops {
         match *op {
@@ -1756,7 +1771,7 @@ pub fn prove_shard_precomputed(
             Op::Lookup { idx, out, table } => {
                 let alpha = rng.field();
                 let beta = rng.field();
-                let p = prove_lookup_fractional(
+                let (p, num, den) = prove_lookup_fractional_columns(
                     &store.idx[idx],
                     store.get(out),
                     store.get(table),
@@ -1764,6 +1779,14 @@ pub fn prove_shard_precomputed(
                     beta,
                     rng,
                 );
+                let (point, num_leaf, den_leaf) = fractional_leaf(&p);
+                witness_columns.push(WitnessColumn {
+                    num,
+                    den,
+                    point,
+                    num_leaf,
+                    den_leaf,
+                });
                 op_proofs.push(OpProof::Lookup(p));
             }
             Op::Softmax {
@@ -2022,6 +2045,7 @@ pub fn prove_shard_precomputed(
         bound,
         binds,
         claims: raw_claims,
+        witness_columns,
     }
 }
 
