@@ -121,3 +121,5 @@ the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 - MoE Scatter permutation committed: PermutationProof split into a/b fractional sides, witness a/b/num committed and opened at both leaf points, alpha Fiat-Shamir bound. deepseek compiles, 48 tests green.
 
 - limb/bin range-check tables: closed-form MLE eval (Sigma p_i*2^i) instead of commitment. Gather committed path: commit weighted/gate/out/num/den + open (witness still kept; store-free clearing is follow-up). 48 tests green, deepseek compiles.
+
+- Gather histogram split into source/target fractional sides (cross-link S_source==S_target), committed path commits num_source/den_source/num_target/den_target/weighted/gate/out + opens. Fixed the negative-sign bug in target num. 48 tests green, deepseek compiles. Remaining: token_id/den binding + store-free witness clearing.
