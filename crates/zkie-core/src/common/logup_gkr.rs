@@ -32,7 +32,10 @@ pub fn prove_fractional(
 ) -> FractionalProof {
     assert_eq!(num.len(), den.len());
     assert!(num.len().is_power_of_two());
+    let total_vars = num.len().trailing_zeros() as usize;
+    let full_r: Vec<Goldilocks> = (0..total_vars).map(|_| rng.field()).collect();
     let mut layers = Vec::new();
+    let mut layer_idx = 0usize;
     while num.len() > 1 {
         let half = num.len() / 2;
         let (num_low, num_high) = num.split_at(half);
@@ -41,8 +44,7 @@ pub fn prove_fractional(
             .map(|s| num_low[s] * den_high[s] + num_high[s] * den_low[s])
             .collect();
         let next_den: Vec<Goldilocks> = (0..half).map(|s| den_low[s] * den_high[s]).collect();
-        let m = half.trailing_zeros() as usize;
-        let r: Vec<Goldilocks> = (0..m).map(|_| rng.field()).collect();
+        let r: Vec<Goldilocks> = full_r[..total_vars - layer_idx - 1].to_vec();
         let c = rng.field();
         let eq: Vec<Goldilocks> = crate::common::mle::eq_evals(&r);
         let mles: Vec<&[Goldilocks]> = vec![
@@ -53,6 +55,7 @@ pub fn prove_fractional(
         layers.push(FractionalLayer { r, c, proof });
         num = next_num;
         den = next_den;
+        layer_idx += 1;
     }
     FractionalProof {
         layers,
@@ -101,6 +104,41 @@ pub fn verify_fractional(
         }
         num = next_num;
         den = next_den;
+    }
+    proof.final_num == claimed * proof.final_den
+}
+
+// Chained store-free verify: check each layer sumcheck against final_evals
+// already stored in its VirtualProof (no num/den rebuild), then enforce the
+// inter-layer MLE folding relation so next_num_{k-1}(r[k..]) agrees with the
+// low/high evals of num_k at r[k+1..]. Leaf authentication (opening num_0/den_0
+// at the full challenge point) restores soundness in P2/P3.
+pub fn verify_fractional_chain(proof: &FractionalProof, claimed: Goldilocks) -> bool {
+    let one = Goldilocks::from_u64(1);
+    for layer in &proof.layers {
+        let terms = build_terms(layer.c);
+        if !verify_virtual(
+            &layer.proof,
+            &terms,
+            Goldilocks::from_u64(0),
+            &layer.r,
+            &layer.proof.final_evals,
+        ) {
+            return false;
+        }
+    }
+    for w in proof.layers.windows(2) {
+        let prev = &w[0];
+        let curr = &w[1];
+        let rk = prev.r[prev.r.len() - 1];
+        let fold_num = (one - rk) * curr.proof.final_evals[3] + rk * curr.proof.final_evals[4];
+        if prev.proof.final_evals[1] != fold_num {
+            return false;
+        }
+        let fold_den = (one - rk) * curr.proof.final_evals[5] + rk * curr.proof.final_evals[6];
+        if prev.proof.final_evals[2] != fold_den {
+            return false;
+        }
     }
     proof.final_num == claimed * proof.final_den
 }
@@ -300,6 +338,21 @@ mod tests {
         assert!(verify_fractional_storefree(&proof, claimed));
         proof.layers[0].proof.final_evals[0] += Goldilocks::from_u64(1);
         assert!(!verify_fractional_storefree(&proof, claimed));
+    }
+    #[test]
+    fn fractional_roundtrip_chain() {
+        let mut rng = XorShift64::new(0xDEC2);
+        let n = 1usize << 6;
+        let num: Vec<Goldilocks> = (0..n).map(|_| rng.field()).collect();
+        let den: Vec<Goldilocks> = (0..n).map(|i| from_i64((i % 7) as i64 + 1)).collect();
+        let claimed: Goldilocks = (0..n).fold(Goldilocks::from_u64(0), |acc, i| {
+            acc + num[i] * den[i].inverse()
+        });
+        let mut proof = prove_fractional(num.clone(), den.clone(), &mut rng);
+        assert!(verify_fractional(&proof, num.clone(), den.clone(), claimed));
+        assert!(verify_fractional_chain(&proof, claimed));
+        proof.layers[0].proof.final_evals[3] += Goldilocks::from_u64(1);
+        assert!(!verify_fractional_chain(&proof, claimed));
     }
     #[test]
     fn lookup_fractional_roundtrip() {

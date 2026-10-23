@@ -11,7 +11,7 @@ verify_fractional / verify_lookup_fractional (logup_gkr.rs) rebuild the full num
 
 ## Design decisions
 1. Store-free verifier: verify_fractional uses layer.proof.final_evals instead of rebuilding the tree.
-2. Leaf authentication: commit the per-layer num/den columns and open them at the challenge points. Flat approach commits every intermediate fraction-tree layer; simple and correct. A chained GKR committing only original x/y/table/m columns is the follow-up optimisation.
+2. Chained GKR (DeepProve style): sample the full challenge point r=(r_0..r_{T-1}) once; layer k uses the prefix r[..T-k-1] as its sumcheck point. The verifier opens only the original merged num_0/den_0 columns at r, and enforces inter-layer consistency with an MLE folding check: next_num_{k-1}(r[..T-k]) == (1-r_{T-k-1})*num_low_k(r[..T-k-1]) + r_{T-k-1}*num_high_k(r[..T-k-1]) (same for den). No intermediate layer is committed.
 3. Lookup tables are committed too (DeepProve parity), not trusted public input.
 4. Security 90 for all commitments (weights, tables, witness, multiplicity).
 5. Witness columns are batch-committed per shard, grouped by size, reusing the existing weight commit_batch / prove_batch_open_committed machinery.
@@ -34,6 +34,17 @@ verify_fractional / verify_lookup_fractional (logup_gkr.rs) rebuild the full num
 - Scatter: token_id, expert_of, sel
 - ScatterAdd: weighted, gate, out, token_id
 - GatherMatMul: counts, table
+
+## Chained GKR protocol (logup_gkr.rs)
+
+prove_fractional builds the fraction-addition tree (num_0/den_0 down to
+final_num/final_den). The full challenge point r has T=log2(N) entries and is
+sampled once; layer k runs prove_virtual at point r[..T-k-1].
+
+verify_fractional_chain checks, per layer, the sumcheck against the stored
+final_evals (no num/den rebuild), then checks the inter-layer MLE folding so
+next_num_{k-1} and num_low_k/num_high_k agree. The remaining soundness gap is
+the leaf: eval(num_0, r) / eval(den_0, r) is committed and opened in P2/P3.
 
 ## Phases
 - P0: this document.
