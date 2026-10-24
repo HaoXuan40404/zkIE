@@ -39,22 +39,45 @@ flowchart LR
     AUTO -. searches .-> SHARD
 ```
 
-**Algorithms.** The stack is built on established high-performance proving
-algorithms: **GKR / sum-check** for the linear-algebra reductions, **WHIR / FRI**
-for polynomial commitments and openings, and **LogUp** for the lookup arguments
-that implement the non-linear operators, over the 64-bit Goldilocks field.
+1. **Algorithms.** The stack is built on established high-performance proving
+   algorithms: **GKR / sum-check** for the linear-algebra reductions, **WHIR /
+   FRI** for polynomial commitments and openings, and **LogUp** for the lookup
+   arguments that implement the non-linear operators, over the 64-bit
+   Goldilocks field.
+2. **Primitives as the stable interface.** Proof primitives are designed per
+   ONNX op type and implemented with the algorithms above, and that
+   implementation is currently competitive. Because the primitive is the
+   interface and the algorithm is only its internals, a better algorithm can be
+   integrated later without touching the proving circuits already built for
+   existing models — only the primitive's implementation changes.
+3. **Autotuning.** An AI-assisted autotune loop decides how the circuit is split
+   into shards and how each proof stage is scheduled across CPU and GPU. There
+   is no need to hand-tune the low-level circuit composition, which makes
+   adapting to a new model much faster.
 
-**Primitives as the stable interface.** Proof primitives are designed per ONNX op
-type and implemented with the algorithms above, and that implementation is
-currently competitive. Because the primitive is the interface and the algorithm is
-only its internals, a better algorithm can be integrated later without touching the
-proving circuits already built for existing models — only the primitive's
-implementation changes.
+### Architecture
 
-**Autotuning.** An AI-assisted autotune loop decides how the circuit is split into
-shards and how each proof stage is scheduled across CPU and GPU. There is no need
-to hand-tune the low-level circuit composition, which makes adapting to a new model
-much faster.
+Three layers, plus autotuning on top. Layers 1-3 are code; the autotuning in 4
+is a process that works through their interfaces, not a component that optimises
+by itself.
+
+1. **Proof primitives** — matmul GKR reduction, LogUp fractional lookup, the
+   rounding range check, and WHIR/FRI commitments and openings.
+2. **Op layer** — one proof primitive per ONNX op type. This is the deliverable
+   and it does not change: a new model is wired on top of it, never into it.
+3. **Shard layer** — consecutive ops fold into one sumcheck, and only the shard
+   boundary is committed and opened. How many ops make a shard is a public
+   parameter: one op, a few ops, one transformer layer, several layers, or the
+   whole model — the same code path.
+4. **AI-assisted autotuning** — an AI agent searches `shard granularity ×
+   per-stage CPU/GPU schedule × layout` through the interfaces exposed by 1-3:
+   measure, change, measure again, keep the fastest. It is not a self-contained
+   optimiser inside the prover.
+
+CPU/GPU is not a per-shard switch. Each stage inside a shard dispatches on its
+own — forward matmuls, commitment (FFT + Merkle), the sumchecks, and the FRI
+openings — so a large codeword can go to the GPU while a small, launch-bound one
+stays on the CPU.
 
 ## Use cases
 
