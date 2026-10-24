@@ -19,18 +19,9 @@ of re-running a model to check its output, verify a short proof that the output
 | **Measured cost** | prove **82 s – 39 min**, verify **0.6 – 4.3 s**, proof **21 – 130 MB**, argmax exact (16/16, 512/512). See [Benchmarks](#benchmarks). |
 | **Not yet** | Witness hiding (weights and activations are public), and the autotune loop. |
 
-**Read by role:** [30-second version](#tldr) · [run it in 5 minutes](#run-it) · [how it works](#how-it-works)
+**Read by role:** [how it works](#how-it-works) · [run it in 5 minutes](#run-it)
 
-## TL;DR
-
-- **The problem.** An AI result today can only be checked two ways: re-run the
-  model (pay the compute twice, and trust whoever runs it) or trust the operator.
-  Neither works when the result settles money on-chain.
-- **The idea.** Do the expensive part once, offline, and hand the verifier a
-  short proof. Cheap verification is what makes AI outputs *adjudicable* by a
-  contract, not just auditable by a human.
-- **The state.** A real 124M–270M model, end to end: commit → prove → verify,
-  with the argmax matching the reference model exactly.
+## How it works
 
 ```mermaid
 flowchart LR
@@ -53,6 +44,11 @@ not an optimiser hidden inside the prover. CPU/GPU is not a per-shard switch:
 each stage (forward matmul, commitment, sumchecks, FRI openings) dispatches on
 its own, so a large codeword can go to the GPU while a small, launch-bound one
 stays on the CPU.
+
+Two verifier flavours exist: the **plain** path reads no witness and no `Store`;
+the **fully-sound** path additionally verifies WHIR openings for weights and shard
+boundaries. Weights and activations are public — the current route targets
+correctness and succinctness rather than witness hiding.
 
 ## Run it
 
@@ -114,72 +110,6 @@ contract settles** without re-running the model or trusting the worker.
 The obstacle is cost, not expressiveness: proving is dominated by time and
 memory, both still far above the cost of the inference itself. That is why the
 whole stack is organised around *offline prove, cheap verify*.
-
-## Prove → verify in one picture
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant P as Prover (offline)
-    participant V as Verifier (contract / app)
-    P->>P: export ONNX → build the op graph
-    P->>P: commit weights + shard boundaries (WHIR)
-    P->>P: prove sumchecks (GKR for matmuls, LogUp for non-linears)
-    P-->>V: proof = roots + openings + claims
-    Note over P,V: public: input, output, lookup tables, model identity
-    V->>V: check sumchecks against the roots
-    V->>V: verify WHIR openings of weights / boundaries (fully-sound path)
-    V-->>V: accept or reject — no forward pass, no witness
-```
-
-Two verifier flavours exist: the **plain** path reads no witness and no `Store`;
-the **fully-sound** path additionally verifies WHIR openings for weights and shard
-boundaries. Weights and activations are public — the current route targets
-correctness and succinctness rather than witness hiding.
-
-## How it works
-
-### Algorithms
-
-The stack is built on established high-performance proving algorithms: **GKR /
-sum-check** for the linear-algebra reductions, **WHIR / FRI** for polynomial
-commitments and openings, and **LogUp** for the lookup arguments that implement
-the non-linear operators, over the 64-bit Goldilocks field.
-
-### Primitives as the stable interface
-
-Proof primitives are designed per ONNX op type and implemented with the
-algorithms above, and that implementation is currently competitive. Because the
-primitive is the interface and the algorithm is only its internals, a better
-algorithm can be integrated later without touching the proving circuits already
-built for existing models — only the primitive's implementation changes.
-
-### The four layers
-
-1. **Proof primitives** — matmul GKR reduction, LogUp fractional lookup, the
-   rounding range check, and WHIR/FRI commitments and openings.
-2. **Op layer** — one proof primitive per ONNX op type. This is the deliverable
-   and it does not change: a new model is wired on top of it, never into it.
-3. **Shard layer** — consecutive ops fold into one sumcheck, and only the shard
-   boundary is committed and opened. How many ops make a shard is a public
-   parameter: one op, a few ops, one transformer layer, several layers, or the
-   whole model — the same code path.
-4. **AI-assisted autotuning** — an AI agent searches `shard granularity ×
-   per-stage CPU/GPU schedule × layout` through the interfaces exposed by 1–3:
-   measure, change, measure again, keep the fastest. It is not a self-contained
-   optimiser inside the prover.
-
-### Op → primitive
-
-| ONNX op | Proof primitive |
-| --- | --- |
-| MatMul | GKR reduction over the contraction index, leaving input/output claims |
-| Add / elementwise | elementwise constraint |
-| Softmax | exp lookup + row sum + division |
-| LayerNorm / RMSNorm | normalization + affine |
-| GELU / non-linear | LogUp fractional lookup |
-| Lookup | LogUp fractional sumcheck |
-| Affine (fixed-point rounding) | rounding range check (LogUp) |
 
 ## Benchmarks
 
