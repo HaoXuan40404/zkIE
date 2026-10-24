@@ -1,3 +1,22 @@
+# Current committed-path results (2026-10-24)
+
+Measured on a 128-vCPU Alibaba Cloud machine with `-C target-cpu=native` and
+64 Rayon threads. The GPT-2 and Gemma 3 rows use the checked-in real
+prompt+response vectors. `-` means the value was not measured in this run.
+
+| Model | Seq | Commit | Prove | Verify | Argmax | Peak RSS | Proof |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| TimesFM 1.0 200M | 16 | 12.4 s | 104.8 s | 3.2 s | - | ~21.6 GB | ~114.6 MB |
+| GPT-2 124M | 16 | 10.8 s | 82.3 s | 0.6 s | 16/16 | ~24.7 GB | ~20.8 MB |
+| GPT-2 124M | 512 | 18.7 s | 418.0 s | 2.8 s | 512/512 | ~43.5 GB | ~96.1 MB |
+| Gemma 3 270M | 16 | 22.3 s | 218.4 s | 1.6 s | 16/16 | ~60.3 GB | ~42.5 MB |
+| Gemma 3 270M | 512 | 30.5 s | 2348.3 s | 4.3 s | 512/512 | ~87.4 GB | ~130.2 MB |
+| DeepSeek-V2-Lite | 16 | - | - | - | - | - | - |
+| DeepSeek-V2-Lite | 512 | - | - | - | - | - | - |
+
+The sections below are historical measurements from earlier paths and dates;
+they are retained for design history rather than current performance claims.
+
 ## GPT-2 512 full model (op-primitive shard DAG, GKR + logUp) (2026-10-01)
 
 Real GPT-2 (12 layers, 12 heads, pre-norm, real weights, lm_head), sequence
@@ -532,4 +551,3 @@ Release build, 64-thread CPU, 13 shards (per layer), plain store-free path
 | --- | --- | --- | --- | --- | --- |
 | GPT-2 124M | 16 | 17.4 s | 14.4 s | 16/16 | ~31.3 GB |
 | GPT-2 124M | 512 | 49.4 s | 26.7 s | 512/512 | ~29.6 GB |
-

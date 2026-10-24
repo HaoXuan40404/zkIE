@@ -74,6 +74,19 @@ def save_model_inputs(name, weights_dir, model, tokenizer):
     )
 
 
+def save_gemma_rope(weights_dir, seq_len=512):
+    head_dim = 256
+    scale = 65536.0
+    position = np.arange(seq_len, dtype=np.float64)[:, None]
+    index = np.arange(head_dim // 2, dtype=np.float64)[None, :]
+    for base, tag in ((10000.0, "local"), (1_000_000.0, "global")):
+        theta = position * np.power(base, -2.0 * index / head_dim)
+        cos = np.clip(np.round(np.cos(theta) * scale), -(2**31), 2**31 - 1)
+        sin = np.clip(np.round(np.sin(theta) * scale), -(2**31), 2**31 - 1)
+        cos.astype(np.int32).tofile(weights_dir / f"rope_cos_{tag}_i32.bin")
+        sin.astype(np.int32).tofile(weights_dir / f"rope_sin_{tag}_i32.bin")
+
+
 def main():
     torch.set_num_threads(TORCH_THREADS)
 
@@ -94,7 +107,9 @@ def main():
         gemma_hf, local_files_only=True, dtype=torch.float32
     )
     gemma_model.eval()
-    save_model_inputs("gemma3", ROOT / "models/gemma3/weights", gemma_model, gemma_tokenizer)
+    gemma_weights = ROOT / "models/gemma3/weights"
+    save_model_inputs("gemma3", gemma_weights, gemma_model, gemma_tokenizer)
+    save_gemma_rope(gemma_weights)
 
     print("real prompt+response inputs generated")
 
