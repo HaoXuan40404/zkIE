@@ -35,7 +35,7 @@ fn main() {
     let mut ops = Vec::new();
     let (_x0, logits, tokens, t) = build_deepseek(&mut store, &mut ops, dir, m, 16);
     println!("seq={m} total ops: {}", ops.len());
-    let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
+    let gt = load_i32(&format!("{dir}/gt_argmax_{}i32.bin", if m <= 16 { "" } else { "512_" }));
 
     // Boundaries build a per-tensor Whir internally; this is a placeholder.
     let whir = Whir::new_testing(5);

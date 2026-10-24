@@ -37,7 +37,7 @@ fn main() {
     let mut store = Store::new();
     let mut ops = Vec::new();
     let (_x0, logits, tokens, t) = build_gemma3(&mut store, &mut ops, dir, m, shift);
-    let gt = load_i32(&format!("{dir}/gt_argmax_i32.bin"));
+    let gt = load_i32(&format!("{dir}/gt_argmax_{}i32.bin", if m <= 16 { "" } else { "512_" }));
 
     // Boundary tensors are seq x H_PAD = 16 x 1024 = 2^14.
     let whir = Whir::new_testing(14);
