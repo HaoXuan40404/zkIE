@@ -39,16 +39,22 @@ flowchart LR
     AUTO -. searches .-> SHARD
 ```
 
-Layers 1–3 are code; layer 4 is a process that works *through* their interfaces,
-not an optimiser hidden inside the prover. CPU/GPU is not a per-shard switch:
-each stage (forward matmul, commitment, sumchecks, FRI openings) dispatches on
-its own, so a large codeword can go to the GPU while a small, launch-bound one
-stays on the CPU.
+**Algorithms.** The stack is built on established high-performance proving
+algorithms: **GKR / sum-check** for the linear-algebra reductions, **WHIR / FRI**
+for polynomial commitments and openings, and **LogUp** for the lookup arguments
+that implement the non-linear operators, over the 64-bit Goldilocks field.
 
-Two verifier flavours exist: the **plain** path reads no witness and no `Store`;
-the **fully-sound** path additionally verifies WHIR openings for weights and shard
-boundaries. Weights and activations are public — the current route targets
-correctness and succinctness rather than witness hiding.
+**Primitives as the stable interface.** Proof primitives are designed per ONNX op
+type and implemented with the algorithms above, and that implementation is
+currently competitive. Because the primitive is the interface and the algorithm is
+only its internals, a better algorithm can be integrated later without touching the
+proving circuits already built for existing models — only the primitive's
+implementation changes.
+
+**Autotuning.** An AI-assisted autotune loop decides how the circuit is split into
+shards and how each proof stage is scheduled across CPU and GPU. There is no need
+to hand-tune the low-level circuit composition, which makes adapting to a new model
+much faster.
 
 ## Use cases
 
