@@ -30,7 +30,7 @@ fn peak_rss_kb() -> u64 {
 }
 
 fn main() {
-    let m = 16usize;
+    let m = std::env::var("GEMMA_SEQ").ok().and_then(|v| v.parse().ok()).unwrap_or(16usize);
     let shift = 16u32;
     let dir = "models/gemma3/weights";
 
