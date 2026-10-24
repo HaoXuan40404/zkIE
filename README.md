@@ -50,6 +50,22 @@ the **fully-sound** path additionally verifies WHIR openings for weights and sha
 boundaries. Weights and activations are public — the current route targets
 correctness and succinctness rather than witness hiding.
 
+## Use cases
+
+Each case is the same shape: **work happens off-chain → a proof comes back → a
+contract settles** without re-running the model or trusting the worker.
+
+| | Trusted escrow for work | Trustless delivery / agent commerce | On-chain governance |
+| --- | --- | --- | --- |
+| **Who** | A trading bot's counterparty, an escrow contract | A job poster buying work from an autonomous agent | A DAO settling a decision made by a model |
+| **Pain today** | Payout needs the strategy *and* its executions to be trustworthy — the operator can claim anything | The evaluator of a job is a human or a trusted server; that is the bottleneck for machine-to-machine deals | Multi-party human voting is slow, and "ask an AI" is unverifiable |
+| **What zkIE proves** | "These 200 fills are what the stated strategy produced on this market data" | "This deliverable was produced by the stated pipeline on this input" | "This decision is the output of the committed model on the committed tally" |
+| **What the verifier does** | Checks the proof against roots — **0.6–4.3 s**, no re-run, no witness | Same, per job, per delivery | Same, per proposal |
+
+The obstacle is cost, not expressiveness: proving is dominated by time and
+memory, both still far above the cost of the inference itself. That is why the
+whole stack is organised around *offline prove, cheap verify*.
+
 ## Run it
 
 ### 60 seconds, no weights, no model
@@ -94,22 +110,6 @@ cargo test --workspace
 ```
 
 To add a new model, see [docs/adding-a-model.md](docs/adding-a-model.md).
-
-## Use cases
-
-Each case is the same shape: **work happens off-chain → a proof comes back → a
-contract settles** without re-running the model or trusting the worker.
-
-| | Trusted escrow for work | Trustless delivery / agent commerce | On-chain governance |
-| --- | --- | --- | --- |
-| **Who** | A trading bot's counterparty, an escrow contract | A job poster buying work from an autonomous agent | A DAO settling a decision made by a model |
-| **Pain today** | Payout needs the strategy *and* its executions to be trustworthy — the operator can claim anything | The evaluator of a job is a human or a trusted server; that is the bottleneck for machine-to-machine deals | Multi-party human voting is slow, and "ask an AI" is unverifiable |
-| **What zkIE proves** | "These 200 fills are what the stated strategy produced on this market data" | "This deliverable was produced by the stated pipeline on this input" | "This decision is the output of the committed model on the committed tally" |
-| **What the verifier does** | Checks the proof against roots — **0.6–4.3 s**, no re-run, no witness | Same, per job, per delivery | Same, per proposal |
-
-The obstacle is cost, not expressiveness: proving is dominated by time and
-memory, both still far above the cost of the inference itself. That is why the
-whole stack is organised around *offline prove, cheap verify*.
 
 ## Benchmarks
 
