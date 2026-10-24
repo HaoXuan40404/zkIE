@@ -211,38 +211,6 @@ batched — it is the cost you pay once per model-audit, not per query. The
 `argmax` column is the correctness check: the proven forward pass reproduces the
 reference model's token choices exactly.
 
-## Repository layout
-
-- `crates/zkie-core/` — the proving substrate:
-  - `src/common/` — Goldilocks field, fixed-point embedding, MLE evaluation,
-    sumcheck, the matmul / LogUp / `same_poly` reductions, and the claim type.
-  - `src/pcs/` — the WHIR/FRI polynomial commitment scheme (`whir.rs`),
-    batch openings (`batch_open.rs`), committed tensors (`committed.rs`), and
-    the optional CUDA backend (`dft_cuda.rs`, `merkle_cuda.rs`, `cuda_ffi.rs`,
-    `cuda_buffer.rs`) behind the `cuda` feature.
-  - `examples/hello_zkie.rs` — the 6-step demo above (no weights needed).
-- `crates/zkie-ops/` — op-level proof primitives, one per ONNX op type:
-  - `compose.rs` — `Op`, `Store`, `prove_shard`, `prove_shard_dag`, and the
-    cross-shard `same_poly` binding.
-  - `projection.rs`, `layer_norm_centered.rs`, `softmax_scaled.rs`,
-    `layernorm_chain.rs` — the matmul/normalization/softmax primitives.
-  - `par.rs` — the i64 fixed-point forward matmul (cache-friendly, with field
-    fallback).
-- `crates/zkie-engine/` — the autotune engine:
-  - `src/engine.rs` — shard granularity, per-stage CPU/GPU schedule, and the
-    autotune loop.
-  - `benchmark/` — generic (non-model) micro-benchmarks of the primitives and
-    the WHIR/FRI PCS.
-- `models/gpt2/`, `models/timesfm/`, `models/gemma3/`,
-  `models/deepseek-v2-lite/` — one crate per model; each holds the op-graph
-  builder (`src/lib.rs`), its own `examples/` (prove + benchmarks), and a
-  gitignored `weights/` (export steps + sha256 in the per-model `README.md`).
-- `scripts/` — ONNX export, fixed-point extraction, lookup-table generators and
-  fidelity checks. Tables are per-model: they land in `models/<model>/weights/`.
-- `docs/` — `spec.md` (design), `benchmarks.md` (measurements),
-  `adding-a-model.md` (how to add a new model), `roadmap.md`, and
-  `overview.zh-CN.md` (Chinese project overview).
-
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).
