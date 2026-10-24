@@ -2750,17 +2750,11 @@ pub struct GatherLocation {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub enum SelOpeningProof {
-    MultiPoint(zkie_core::pcs::batch_open::BatchOpeningProof),
-    SinglePoint(zkie_core::pcs::whir::Proof),
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SelOpening {
     pub commitment: zkie_core::pcs::whir::Commitment,
     pub arity: usize,
     pub points: Vec<Vec<Goldilocks>>,
-    pub openings: Vec<SelOpeningProof>,
+    pub openings: Vec<zkie_core::pcs::whir::Proof>,
 }
 
 
@@ -3278,33 +3272,18 @@ pub fn prove_committed_shard_dag(
                     points.push(point);
                 }
                 let commitment = c.commitment.clone();
-                let openings = if *m <= 16 {
-                    let ctx = zkie_core::pcs::committed::BatchCtx {
-                        commitment: c.commitment,
-                        prover_data: c.prover_data,
-                        protocol: c.protocol,
-                        whir: bw,
-                        num_tables: 1,
+                let mut prover_data = Some(c.prover_data);
+                let mut openings = Vec::with_capacity(*m);
+                for (i, point) in points.iter().enumerate() {
+                    let data = if i + 1 == *m {
+                        prover_data.take().expect("last Argmax opening owns prover data")
+                    } else {
+                        prover_data.as_ref().expect("Argmax prover data").clone()
                     };
-                    let proof = zkie_core::pcs::batch_open::
-                        prove_single_table_multi_point_committed_owned(ctx, &sel_pad, &points)
-                        .expect("honest Argmax selection batch-open");
-                    vec![SelOpeningProof::MultiPoint(proof)]
-                } else {
-                    let mut prover_data = Some(c.prover_data);
-                    let mut openings = Vec::with_capacity(*m);
-                    for (i, point) in points.iter().enumerate() {
-                        let data = if i + 1 == *m {
-                            prover_data.take().expect("last Argmax opening owns prover data")
-                        } else {
-                            prover_data.as_ref().expect("Argmax prover data").clone()
-                        };
-                        let (opening, ev) = bw.open(data, &c.protocol, point);
-                        assert_eq!(ev, Goldilocks::ONE);
-                        openings.push(SelOpeningProof::SinglePoint(opening));
-                    }
-                    openings
-                };
+                    let (opening, ev) = bw.open(data, &c.protocol, point);
+                    assert_eq!(ev, Goldilocks::ONE);
+                    openings.push(opening);
+                }
                 ap.sel_evals = vec![Goldilocks::ONE; *m];
                 ap.topk.sel.clear();
                 sel_openings.push(SelOpening {
@@ -3938,44 +3917,20 @@ pub fn verify_committed_shard_dag(
         }
     }
     for so in &proof.sel_openings {
-        if so.points.is_empty() || so.openings.is_empty() {
+        if so.points.is_empty() || so.openings.len() != so.points.len() {
             return false;
         }
         let pow_bits = zkie_core::pcs::whir::Whir::required_pow_bits(so.arity, 90);
         let bw = zkie_core::pcs::whir::Whir::with_params(so.arity, 90, pow_bits);
         let protocol = bw.opening_protocol(so.arity, 1);
-        match so.openings.as_slice() {
-            [SelOpeningProof::MultiPoint(opening)] => {
-                let table_idxs = vec![0; so.points.len()];
-                let claimed = vec![Goldilocks::ONE; so.points.len()];
-                if !zkie_core::pcs::batch_open::verify_batch_open_committed(
-                    &bw,
-                    &so.commitment,
-                    &protocol,
-                    1,
-                    &table_idxs,
-                    &so.points,
-                    &claimed,
-                    opening,
-                ) {
-                    return false;
-                }
+        for (opening, point) in so.openings.iter().zip(&so.points) {
+            if bw
+                .verify(&so.commitment, opening, &protocol, point)
+                .ok()
+                != Some(Goldilocks::ONE)
+            {
+                return false;
             }
-            openings if openings.len() == so.points.len() => {
-                for (opening, point) in openings.iter().zip(&so.points) {
-                    let SelOpeningProof::SinglePoint(opening) = opening else {
-                        return false;
-                    };
-                    if bw
-                        .verify(&so.commitment, opening, &protocol, point)
-                        .ok()
-                        != Some(Goldilocks::ONE)
-                    {
-                        return false;
-                    }
-                }
-            }
-            _ => return false,
         }
     }
     if proof.perm_batches.len() != proof.perm_batch_openings.len() {
@@ -5123,7 +5078,7 @@ mod tests {
     }
 
     #[test]
-    fn argmax_selection_openings_are_batched() {
+    fn argmax_selection_openings_are_individual() {
         use zkie_core::common::field::PrimeCharacteristicRing;
         use zkie_core::pcs::whir::Whir;
 
@@ -5197,7 +5152,7 @@ mod tests {
         );
 
         assert_eq!(proof.sel_openings.len(), 1);
-        assert_eq!(proof.sel_openings[0].openings.len(), 1);
+        assert_eq!(proof.sel_openings[0].openings.len(), m);
         assert!(verify_committed_shard_dag(
             &store.owned_slices(),
             &ops,
@@ -5217,61 +5172,6 @@ mod tests {
         proof.sel_openings[0].points[0][0] =
             proof.sel_openings[0].points[0][0] + Goldilocks::ONE;
         assert!(!verify_committed_shard_dag(
-            &store.owned_slices(),
-            &ops,
-            1,
-            &whir,
-            &proof
-        ));
-    }
-
-    #[test]
-    fn large_argmax_selection_uses_individual_openings() {
-        use zkie_core::common::field::PrimeCharacteristicRing;
-        use zkie_core::pcs::whir::Whir;
-
-        let mut rng = XorShift64::new(0x515F);
-        let (m, n) = (32usize, 32usize);
-        let mut store = Store::new();
-        let x = store.push(
-            (0..m * n)
-                .map(|i| from_i64(((i * 37) % 101) as i64))
-                .collect(),
-        );
-        let sel = store.push(vec![]);
-        let thr = store.push(vec![]);
-        let gate = store.push(vec![]);
-        let d1 = store.push(vec![]);
-        let d2 = store.push(vec![]);
-        let out = store.push_idx(vec![]);
-        let ops = vec![Op::Argmax {
-            x,
-            sel,
-            thr,
-            gate,
-            d1,
-            d2,
-            out,
-            m,
-            n,
-        }];
-
-        let whir = Whir::new_testing(10);
-        let tokens_t = store.push_idx(vec![]);
-        let argmax_t = store.push_idx(vec![]);
-        let proof = prove_committed_shard_dag(
-            &mut store,
-            &ops,
-            1,
-            &whir,
-            &[],
-            &mut rng,
-            tokens_t,
-            argmax_t,
-        );
-
-        assert_eq!(proof.sel_openings[0].openings.len(), m);
-        assert!(verify_committed_shard_dag(
             &store.owned_slices(),
             &ops,
             1,
