@@ -201,6 +201,112 @@ pub struct BatchOpeningProof {
     pub evals: Vec<Goldilocks>,
 }
 
+fn prove_single_table_multi_point_with_data(
+    whir: &Whir,
+    commitment: &crate::pcs::whir::Commitment,
+    protocol: &crate::pcs::whir::OpeningProtocol,
+    num_tables: usize,
+    prover_data: crate::pcs::whir::ProverData,
+    tensor: &[Goldilocks],
+    points: &[Vec<Goldilocks>],
+) -> Result<BatchOpeningProof, String> {
+    if num_tables != 1 {
+        return Err("single-table batch must contain exactly one table".to_owned());
+    }
+    if points.is_empty() {
+        return Err("empty point set".to_owned());
+    }
+    let d = points[0].len();
+    if tensor.len() != 1usize << d || !tensor.len().is_power_of_two() {
+        return Err("tensor shape does not match opening point arity".to_owned());
+    }
+    if points.iter().any(|point| point.len() != d) {
+        return Err("opening point arity mismatch".to_owned());
+    }
+
+    let mut t = crate::common::transcript::Transcript::new(b"zkie-batch-open");
+    t.absorb(&bincode::serialize(commitment).map_err(|e| e.to_string())?);
+    for point in points {
+        t.absorb_fields(point);
+        t.absorb_field(Goldilocks::ONE);
+    }
+    let gamma = t.field();
+    let challenges = t.field_vec(d);
+
+    let mut weights = vec![Goldilocks::ZERO; tensor.len()];
+    let mut claimed_sum = Goldilocks::ZERO;
+    let mut gamma_pow = Goldilocks::ONE;
+    for point in points {
+        let eq = mle::eq_evals(point);
+        for (weight, eq_eval) in weights.iter_mut().zip(eq) {
+            *weight = *weight + gamma_pow * eq_eval;
+        }
+        claimed_sum = claimed_sum + gamma_pow;
+        gamma_pow = gamma_pow * gamma;
+    }
+
+    let tensor_buf = tensor.to_vec();
+    let sumcheck = sumcheck::prove_sum_of_products(
+        std::slice::from_ref(&weights),
+        std::slice::from_ref(&tensor_buf),
+        claimed_sum,
+        &challenges,
+    );
+    let (open, evals) =
+        whir.open_batch_multi(prover_data, protocol, num_tables, &challenges);
+    Ok(BatchOpeningProof {
+        sumcheck,
+        open,
+        evals,
+    })
+}
+
+/// Batch many openings of one committed table at different points into one
+/// sumcheck plus one WHIR opening. The caller knows every claimed evaluation
+/// is one (the one-hot Argmax selector case), so only the points need to be
+/// included in the proof.
+pub fn prove_single_table_multi_point_committed(
+    batch: &crate::pcs::committed::BatchCtx,
+    tensor: &[Goldilocks],
+    points: &[Vec<Goldilocks>],
+) -> Result<BatchOpeningProof, String> {
+    prove_single_table_multi_point_with_data(
+        &batch.whir,
+        &batch.commitment,
+        &batch.protocol,
+        batch.num_tables,
+        batch.prover_data.clone(),
+        tensor,
+        points,
+    )
+}
+
+/// Owned variant of `prove_single_table_multi_point_committed` for callers
+/// that open the committed batch exactly once. Moves the Merkle prover data
+/// into WHIR instead of deep-cloning it.
+pub fn prove_single_table_multi_point_committed_owned(
+    batch: crate::pcs::committed::BatchCtx,
+    tensor: &[Goldilocks],
+    points: &[Vec<Goldilocks>],
+) -> Result<BatchOpeningProof, String> {
+    let crate::pcs::committed::BatchCtx {
+        commitment,
+        prover_data,
+        protocol,
+        whir,
+        num_tables,
+    } = batch;
+    prove_single_table_multi_point_with_data(
+        &whir,
+        &commitment,
+        &protocol,
+        num_tables,
+        prover_data,
+        tensor,
+        points,
+    )
+}
+
 /// Prover side of a multi-point batch opening on an already-committed batch.
 /// `gamma` and `challenges` are sampled by the caller (and carried in the
 /// surrounding proof), so prove/verify stay in lockstep. Opens all `num_tables`
@@ -208,6 +314,59 @@ pub struct BatchOpeningProof {
 #[allow(clippy::too_many_arguments)]
 pub fn prove_batch_open_committed(
     batch: &crate::pcs::committed::BatchCtx,
+    table_idxs: &[usize],
+    tensors: &[Vec<Goldilocks>],
+    points: &[Vec<Goldilocks>],
+    claimed: &[Goldilocks],
+) -> Result<BatchOpeningProof, String> {
+    prove_batch_open_committed_with_data(
+        &batch.whir,
+        &batch.commitment,
+        &batch.protocol,
+        batch.num_tables,
+        batch.prover_data.clone(),
+        table_idxs,
+        tensors,
+        points,
+        claimed,
+    )
+}
+
+/// Owned variant of `prove_batch_open_committed` for one-shot batch openings.
+/// Consumes the WHIR prover data instead of cloning its Merkle tree.
+pub fn prove_batch_open_committed_owned(
+    batch: crate::pcs::committed::BatchCtx,
+    table_idxs: &[usize],
+    tensors: &[Vec<Goldilocks>],
+    points: &[Vec<Goldilocks>],
+    claimed: &[Goldilocks],
+) -> Result<BatchOpeningProof, String> {
+    let crate::pcs::committed::BatchCtx {
+        commitment,
+        prover_data,
+        protocol,
+        whir,
+        num_tables,
+    } = batch;
+    prove_batch_open_committed_with_data(
+        &whir,
+        &commitment,
+        &protocol,
+        num_tables,
+        prover_data,
+        table_idxs,
+        tensors,
+        points,
+        claimed,
+    )
+}
+
+fn prove_batch_open_committed_with_data(
+    whir: &Whir,
+    commitment: &crate::pcs::whir::Commitment,
+    protocol: &crate::pcs::whir::OpeningProtocol,
+    num_tables: usize,
+    prover_data: crate::pcs::whir::ProverData,
     table_idxs: &[usize],
     tensors: &[Vec<Goldilocks>],
     points: &[Vec<Goldilocks>],
@@ -221,7 +380,7 @@ pub fn prove_batch_open_committed(
 
     // Fiat-Shamir: gamma + fresh point r bound to commitment + points + claimed.
     let mut t = crate::common::transcript::Transcript::new(b"zkie-batch-open");
-    t.absorb(&bincode::serialize(&batch.commitment).map_err(|e| e.to_string())?);
+    t.absorb(&bincode::serialize(commitment).map_err(|e| e.to_string())?);
     for (pt, c) in points.iter().zip(claimed.iter()) {
         t.absorb_fields(pt);
         t.absorb_field(*c);
@@ -241,12 +400,7 @@ pub fn prove_batch_open_committed(
     }
 
     let sumcheck = sumcheck::prove_sum_of_products(&weights, tensors, claimed_sum, &challenges);
-    let (open, evals) = batch.whir.open_batch_multi(
-        batch.prover_data.clone(),
-        &batch.protocol,
-        batch.num_tables,
-        &challenges,
-    );
+    let (open, evals) = whir.open_batch_multi(prover_data, protocol, num_tables, &challenges);
     Ok(BatchOpeningProof {
         sumcheck,
         open,

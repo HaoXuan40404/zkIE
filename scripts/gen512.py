@@ -19,7 +19,7 @@ def pad2(arr, r, c):
     o[: a.shape[0], : a.shape[1]] = a
     return o
 
-tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+tokenizer = GPT2Tokenizer.from_pretrained("models/gpt2/tokenizer", local_files_only=True)
 model = GPT2LMHeadModel.from_pretrained("gpt2")
 model.eval()
 
