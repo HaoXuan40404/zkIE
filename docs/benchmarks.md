@@ -566,3 +566,49 @@ Release build, 64-thread CPU, 13 shards (per layer), plain store-free path
 | --- | --- | --- | --- | --- | --- |
 | GPT-2 124M | 16 | 17.4 s | 14.4 s | 16/16 | ~31.3 GB |
 | GPT-2 124M | 512 | 49.4 s | 26.7 s | 512/512 | ~29.6 GB |
+
+## DeepSeek-V2-Lite committed-path seq512 + argmax baseline note (2026-10-24)
+
+Committed store-free path (`bench_committed`), 64-thread CPU, 12 shards
+(expert-major MoE, mmap weights), real prompt + greedy response.
+
+| model | seq | commit | prove | verify | argmax | peak RSS | proof size |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| DeepSeek-V2-Lite | 512 | ~88.3 s | ~8329 s (~2.31 h) | ~11.0 s | 511/512 | ~389 GB | ~224.8 MB |
+
+Argmax baseline: the ground-truth argmax is the **fixed-point reference**
+(`scripts/fp_deepseek.py`, which mirrors the Rust prover), not the float
+transformers argmax. Comparing the Rust fixed-point model against the float
+HF argmax (`scripts/gen_ds_real.py`) gives ~286/512 — that is the fixed-point
+vs fp32 fidelity gap, not a prover bug. Comparing against the fixed-point
+reference gives 511/512. The `gt_argmax_512_i32.bin` committed here is the
+fixed-point reference; `fp_deepseek.py` now writes the per-seq suffix so it no
+longer clobbers the float-generated file.
+
+## DeepSeek-V2-Lite seq512 real prompt/response content (2026-10-24)
+
+The committed `tokens_i32.bin` (512 tokens) is:
+
+- **prompt**: `"The sky is"` = 3 tokens `[549, 9539, 317]` (`The` / ` sky` / ` is`)
+- **response**: 509 tokens of greedy autoregressive generation (HF DeepSeek model)
+
+The greedy response degenerates into a repeating loop. Representative excerpt
+(full decode ~1.9 KB):
+
+    The sky is the limit for the future of the 2017-18 season.
+    The 2017-18 season is the first season of the new NHL.
+    The NHL is the most popular sport in the world.
+    ...
+    The average salary is $100 million for a player in a Major League Baseball team.
+    The average salary is $100 million for a player in a Major League Soccer team.
+    The average salary is $100 million for a player in a Major League Hockey team.
+    ... (the "Baseball / Soccer / Hockey" cycle repeats until token 512)
+
+The 512th token ends mid-sentence at `"... Major League Baseball"` (last token
+id `46555` = `"Baseball"`), missing the trailing `" team."`.
+
+Why this matters: the repetitive loop makes every next-token prediction a
+near-tie among `Baseball / Soccer / Hockey / team`, so small fixed-point
+quantization errors flip the argmax. This is the direct cause of the
+fixed-point-vs-fp32 argmax being ~286/512 (the fixed-point-reference argmax is
+511/512).
