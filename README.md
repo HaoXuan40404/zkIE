@@ -130,10 +130,12 @@ and the reasoning behind the numbers is in
 | GPT-2 124M | 124M / 124M | seq=512, 13 shards (per layer, committed) | 18.7 s | 418.0 s (~7.0 min) | 2.8 s | 512/512 | ~43.5 GB | ~96.1 MB |
 | Gemma 3 270M | 270M / 270M | seq=16, 22 shards (per layer, committed) | 22.3 s | 218.4 s | 1.6 s | 16/16 | ~60.3 GB | ~42.5 MB |
 | Gemma 3 270M | 270M / 270M | seq=512, 22 shards (per layer, committed) | 30.5 s | 2348.3 s (~39.1 min) | 4.3 s | 512/512 | ~87.4 GB | ~130.2 MB |
-| DeepSeek-V2-Lite | 2.4B / 15.7B | seq=16, 12 shards (expert-major MoE, mmap weights, committed) | - | - | - | - | - | - |
-| DeepSeek-V2-Lite | 2.4B / 15.7B | seq=512, 12 shards (expert-major MoE, mmap weights, committed) | - | - | - | - | - | - |
+| DeepSeek-V2-Lite* | 2.4B / 15.7B | seq=16, 12 shards (expert-major MoE, mmap weights, committed) | 79.3 s | 651.8 s (~10.9 min) | 3.6 s | 16/16 | ~156.6 GB | ~96.0 MB |
+| DeepSeek-V2-Lite* | 2.4B / 15.7B | seq=512, 12 shards (expert-major MoE, mmap weights, committed) | 88.3 s | 8329.0 s (~2.31 h) | 11.0 s | 511/512 | ~389 GB | ~224.8 MB |
 | DeepSeek-V4.1-Flash | 8B/16B* / 552B | MoE + CSA2 + vision (planned) | - | - | - | - | - | - |
 
+* DeepSeek-V2-Lite rows are ported from the `verify-no-forward` 64-thread CPU
+  baseline and have not been rerun with the native build.
 * DeepSeek-V4.1-Flash active params: 8B prefill / 16B decode.
 
 ## Repository layout

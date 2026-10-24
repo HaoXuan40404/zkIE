@@ -11,11 +11,26 @@ prompt+response vectors. `-` means the value was not measured in this run.
 | GPT-2 124M | 512 | 18.7 s | 418.0 s | 2.8 s | 512/512 | ~43.5 GB | ~96.1 MB |
 | Gemma 3 270M | 16 | 22.3 s | 218.4 s | 1.6 s | 16/16 | ~60.3 GB | ~42.5 MB |
 | Gemma 3 270M | 512 | 30.5 s | 2348.3 s | 4.3 s | 512/512 | ~87.4 GB | ~130.2 MB |
-| DeepSeek-V2-Lite | 16 | - | - | - | - | - | - |
-| DeepSeek-V2-Lite | 512 | - | - | - | - | - | - |
+| DeepSeek-V2-Lite* | 16 | 79.3 s | 651.8 s | 3.6 s | 16/16 | ~156.6 GB | ~96.0 MB |
+| DeepSeek-V2-Lite* | 512 | 88.3 s | 8329.0 s | 11.0 s | 511/512 | ~389 GB | ~224.8 MB |
+
+`*` DeepSeek rows are ported from the `verify-no-forward` 64-thread CPU
+baseline and have not been rerun with the native build.
 
 The sections below are historical measurements from earlier paths and dates;
 they are retained for design history rather than current performance claims.
+
+### DeepSeek-V2-Lite committed-path seq512 and argmax baseline
+
+The latest `verify-no-forward` run uses the committed store-free
+`bench_committed` path, 12 expert-major MoE shards, mmap weights, and the real
+prompt plus greedy response.
+
+The committed `gt_argmax_512_i32.bin` is the fixed-point reference from
+`scripts/fp_deepseek.py`, which mirrors the Rust prover. Comparing the Rust
+fixed-point model against the float HF argmax from `scripts/gen_ds_real.py`
+gives 286/512; this is the fixed-point versus fp32 fidelity gap, not a prover
+bug. Comparing against the fixed-point reference gives 511/512.
 
 ## GPT-2 512 full model (op-primitive shard DAG, GKR + logUp) (2026-10-01)
 
