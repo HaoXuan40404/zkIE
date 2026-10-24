@@ -8,92 +8,76 @@
 > op layer and the shard layer are implemented and tested; the AI-assisted
 > autotuning built on top of them is still being completed.
 
-**zkIE** — a Zero-Knowledge Inference Engine for verifiable AI inference.
+**zkIE** — a Zero-Knowledge Inference Engine for verifiable AI inference: instead
+of re-running a model to check its output, verify a short proof that the output
+*is* what the model computes.
 
-Under verifiable AI inference, a result can be trusted without trusting whoever
-produced it. Three things this unlocks:
+|  |  |
+| --- | --- |
+| **What is proven** | For input `x`, the output `y` is exactly what model `M` computes — no witness needed to check it. |
+| **Who does what** | Prover: export ONNX → commit weights/shards → prove. Verifier: check the statement, the lookup tables and the commitment roots (`verify_shard_dag` / `verify_committed_shard_dag`). |
+| **Measured cost** | prove **82 s – 39 min**, verify **0.6 – 4.3 s**, proof **21 – 130 MB**, argmax exact (16/16, 512/512). See [Benchmarks](#benchmarks). |
+| **Not yet** | Witness hiding (weights and activations are public), and the autotune loop. |
 
-- **Trustless work and delivery.** A deliverable — including human work done
-  off-chain — can be judged on-chain and settled automatically: the evaluator of
-  a job becomes a contract rather than a trusted party, which is what agentic
-  commerce requires.
-- **Trusted escrow for work.** Funds are released only once the work has been
-  proven, e.g. an automated trading bot that can prove the strategy and the
-  trades it actually executed before any payout.
-- **On-chain governance with verifiable AI.** Decisions can be settled by a
-  proven model output — an objective evaluation — instead of relying on
-  multi-party human voting.
+**Read by role:** [30-second version](#tldr) · [run it in 5 minutes](#run-it) · [how it works](#how-it-works)
 
-The obstacle is cost, not expressiveness: proving a model today is dominated by
-time and memory, both still far above the cost of the inference itself.
+## TL;DR
 
-**How it is used.** Export the model to ONNX — architecture, weights and op
-graph — and zkIE composes the proving logic for that model's inference circuit
-out of op-level proof primitives. For any input, that circuit then yields a
-proof that the output is what the model computes. The verifier no longer
-re-runs the forward pass: it checks the proof against the statement, the lookup
-tables, and the commitment roots (`verify_shard_dag` / `verify_committed_shard_dag`,
-`compose.rs`), so verifying is now a small fraction of proving (measured: verify
-~25% of prove at seq=512, CPU). The plain path reads no witness or Store; the
-fully-sound path additionally verifies WHIR openings for weights and shard
-boundaries. Weights and activations are public: the current route targets
-correctness and succinctness rather than witness hiding.
+- **The problem.** An AI result today can only be checked two ways: re-run the
+  model (pay the compute twice, and trust whoever runs it) or trust the operator.
+  Neither works when the result settles money on-chain.
+- **The idea.** Do the expensive part once, offline, and hand the verifier a
+  short proof. Cheap verification is what makes AI outputs *adjudicable* by a
+  contract, not just auditable by a human.
+- **The state.** A real 124M–270M model, end to end: commit → prove → verify,
+  with the argmax matching the reference model exactly.
 
-## How it works
+```mermaid
+flowchart LR
+    ONNX["ONNX model<br/>architecture + weights + op graph"]
+    PRIM["<b>1. Proof primitives</b> — zkie-core<br/>GKR / sum-check · LogUp · rounding range check<br/>WHIR / FRI commitments + openings · Goldilocks"]
+    OPS["<b>2. Op layer</b> — zkie-ops (the stable deliverable)<br/>one proof primitive per ONNX op type<br/>MatMul · Add · Softmax · Norm · GELU · Lookup"]
+    SHARD["<b>3. Shard layer</b> — compose.rs<br/>consecutive ops fold into one sumcheck;<br/>only shard boundaries are committed and opened"]
+    PROOF["proof: commitment roots + openings<br/><i>21–130 MB</i>"]
+    VERIFY["verifier: statement + tables + roots<br/><i>0.6–4.3 s, never re-runs the model</i>"]
+    AUTO["<b>4. AI-assisted autotuning</b><br/>shard granularity × per-stage CPU/GPU × layout"]
 
-1. **Algorithms.** The stack is built on established high-performance proving
-   algorithms: **GKR / sum-check** for the linear-algebra reductions, **WHIR /
-   FRI** for polynomial commitments and openings, and **LogUp** for the lookup
-   arguments that implement the non-linear operators, over the 64-bit
-   Goldilocks field.
-2. **Primitives as the stable interface.** Proof primitives are designed per
-   ONNX op type and implemented with the algorithms above, and that
-   implementation is currently competitive. Because the primitive is the
-   interface and the algorithm is only its internals, a better algorithm can be
-   integrated later without touching the proving circuits already built for
-   existing models — only the primitive's implementation changes.
-3. **Autotuning.** An AI-assisted autotune loop decides how the circuit is split
-   into shards and how each proof stage is scheduled across CPU and GPU. There
-   is no need to hand-tune the low-level circuit composition, which makes
-   adapting to a new model much faster.
+    ONNX --> OPS
+    PRIM --- OPS
+    OPS --> SHARD --> PROOF --> VERIFY
+    AUTO -. searches .-> SHARD
+```
 
-### Architecture
-
-Three layers, plus autotuning on top. Layers 1-3 are code; the autotuning in 4
-is a process that works through their interfaces, not a component that optimises
-by itself.
-
-1. **Proof primitives** — matmul GKR reduction, LogUp fractional lookup, the
-   rounding range check, and WHIR/FRI commitments and openings.
-2. **Op layer** — one proof primitive per ONNX op type. This is the deliverable
-   and it does not change: a new model is wired on top of it, never into it.
-3. **Shard layer** — consecutive ops fold into one sumcheck, and only the shard
-   boundary is committed and opened. How many ops make a shard is a public
-   parameter: one op, a few ops, one transformer layer, several layers, or the
-   whole model — the same code path.
-4. **AI-assisted autotuning** — an AI agent searches `shard granularity ×
-   per-stage CPU/GPU schedule × layout` through the interfaces exposed by 1-3:
-   measure, change, measure again, keep the fastest. It is not a self-contained
-   optimiser inside the prover.
-
-CPU/GPU is not a per-shard switch. Each stage inside a shard dispatches on its
-own — forward matmuls, commitment (FFT + Merkle), the sumchecks, and the FRI
-openings — so a large codeword can go to the GPU while a small, launch-bound one
+Layers 1–3 are code; layer 4 is a process that works *through* their interfaces,
+not an optimiser hidden inside the prover. CPU/GPU is not a per-shard switch:
+each stage (forward matmul, commitment, sumchecks, FRI openings) dispatches on
+its own, so a large codeword can go to the GPU while a small, launch-bound one
 stays on the CPU.
 
-### Op → primitive
+## Run it
 
-| ONNX op | Proof primitive |
-| --- | --- |
-| MatMul | GKR reduction over the contraction index, leaving input/output claims |
-| Add / elementwise | elementwise constraint |
-| Softmax | exp lookup + row sum + division |
-| LayerNorm / RMSNorm | normalization + affine |
-| GELU / non-linear | LogUp fractional lookup |
-| Lookup | LogUp fractional sumcheck |
-| Affine (fixed-point rounding) | rounding range check (LogUp) |
+### 60 seconds, no weights, no model
 
-## Usage
+```bash
+cargo run --release -p zkie-core --example hello_zkie
+```
+
+That proves one `C = A @ B` (4×8 @ 8×8) with a single GKR reduction, binds `C` to
+a WHIR commitment, proves a LogUp table lookup, and then shows a tampered output
+and a tampered lookup being rejected. Real output:
+
+```text
+[1/6] commit C (32 field elements)            0.34 ms   root 0x0112d3b08ba6c593…
+[2/6] prove  C = A @ B (GKR over k)           1.66 ms   claimed C(u,v) = 2386173965528947069
+[3/6] verify sumcheck + opening of C          0.10 ms   PASS
+[4/6] tamper one element of C                           FAIL as expected
+[5/6] LogUp lookup y[i] = table[x[i]]         0.26 ms prove /  0.02 ms verify   PASS
+[6/6] tamper one table read                             FAIL as expected
+```
+
+Source: [`crates/zkie-core/examples/hello_zkie.rs`](crates/zkie-core/examples/hello_zkie.rs).
+
+### With a real model
 
 Each model has its own crate under `models/`. Weights and lookup tables are
 gitignored and expected under each model's `weights/` directory (export steps
@@ -114,6 +98,88 @@ cargo test --workspace
 ```
 
 To add a new model, see [docs/adding-a-model.md](docs/adding-a-model.md).
+
+## Use cases
+
+Each case is the same shape: **work happens off-chain → a proof comes back → a
+contract settles** without re-running the model or trusting the worker.
+
+| | Trusted escrow for work | Trustless delivery / agent commerce | On-chain governance |
+| --- | --- | --- | --- |
+| **Who** | A trading bot's counterparty, an escrow contract | A job poster buying work from an autonomous agent | A DAO settling a decision made by a model |
+| **Pain today** | Payout needs the strategy *and* its executions to be trustworthy — the operator can claim anything | The evaluator of a job is a human or a trusted server; that is the bottleneck for machine-to-machine deals | Multi-party human voting is slow, and "ask an AI" is unverifiable |
+| **What zkIE proves** | "These 200 fills are what the stated strategy produced on this market data" | "This deliverable was produced by the stated pipeline on this input" | "This decision is the output of the committed model on the committed tally" |
+| **What the verifier does** | Checks the proof against roots — **0.6–4.3 s**, no re-run, no witness | Same, per job, per delivery | Same, per proposal |
+
+The obstacle is cost, not expressiveness: proving is dominated by time and
+memory, both still far above the cost of the inference itself. That is why the
+whole stack is organised around *offline prove, cheap verify*.
+
+## Prove → verify in one picture
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Prover (offline)
+    participant V as Verifier (contract / app)
+    P->>P: export ONNX → build the op graph
+    P->>P: commit weights + shard boundaries (WHIR)
+    P->>P: prove sumchecks (GKR for matmuls, LogUp for non-linears)
+    P-->>V: proof = roots + openings + claims
+    Note over P,V: public: input, output, lookup tables, model identity
+    V->>V: check sumchecks against the roots
+    V->>V: verify WHIR openings of weights / boundaries (fully-sound path)
+    V-->>V: accept or reject — no forward pass, no witness
+```
+
+Two verifier flavours exist: the **plain** path reads no witness and no `Store`;
+the **fully-sound** path additionally verifies WHIR openings for weights and shard
+boundaries. Weights and activations are public — the current route targets
+correctness and succinctness rather than witness hiding.
+
+## How it works
+
+### Algorithms
+
+The stack is built on established high-performance proving algorithms: **GKR /
+sum-check** for the linear-algebra reductions, **WHIR / FRI** for polynomial
+commitments and openings, and **LogUp** for the lookup arguments that implement
+the non-linear operators, over the 64-bit Goldilocks field.
+
+### Primitives as the stable interface
+
+Proof primitives are designed per ONNX op type and implemented with the
+algorithms above, and that implementation is currently competitive. Because the
+primitive is the interface and the algorithm is only its internals, a better
+algorithm can be integrated later without touching the proving circuits already
+built for existing models — only the primitive's implementation changes.
+
+### The four layers
+
+1. **Proof primitives** — matmul GKR reduction, LogUp fractional lookup, the
+   rounding range check, and WHIR/FRI commitments and openings.
+2. **Op layer** — one proof primitive per ONNX op type. This is the deliverable
+   and it does not change: a new model is wired on top of it, never into it.
+3. **Shard layer** — consecutive ops fold into one sumcheck, and only the shard
+   boundary is committed and opened. How many ops make a shard is a public
+   parameter: one op, a few ops, one transformer layer, several layers, or the
+   whole model — the same code path.
+4. **AI-assisted autotuning** — an AI agent searches `shard granularity ×
+   per-stage CPU/GPU schedule × layout` through the interfaces exposed by 1–3:
+   measure, change, measure again, keep the fastest. It is not a self-contained
+   optimiser inside the prover.
+
+### Op → primitive
+
+| ONNX op | Proof primitive |
+| --- | --- |
+| MatMul | GKR reduction over the contraction index, leaving input/output claims |
+| Add / elementwise | elementwise constraint |
+| Softmax | exp lookup + row sum + division |
+| LayerNorm / RMSNorm | normalization + affine |
+| GELU / non-linear | LogUp fractional lookup |
+| Lookup | LogUp fractional sumcheck |
+| Affine (fixed-point rounding) | rounding range check (LogUp) |
 
 ## Benchmarks
 
@@ -138,6 +204,13 @@ and the reasoning behind the numbers is in
   baseline and have not been rerun with the native build.
 * DeepSeek-V4.1-Flash active params: 8B prefill / 16B decode.
 
+**How to read it.** The two columns that matter for deployment are **Verify** and
+**Proof size**: verification is seconds on a cheap machine, which is what makes
+on-chain or in-app checking possible at all. Proving is deliberately offline and
+batched — it is the cost you pay once per model-audit, not per query. The
+`argmax` column is the correctness check: the proven forward pass reproduces the
+reference model's token choices exactly.
+
 ## Repository layout
 
 - `crates/zkie-core/` — the proving substrate:
@@ -147,6 +220,7 @@ and the reasoning behind the numbers is in
     batch openings (`batch_open.rs`), committed tensors (`committed.rs`), and
     the optional CUDA backend (`dft_cuda.rs`, `merkle_cuda.rs`, `cuda_ffi.rs`,
     `cuda_buffer.rs`) behind the `cuda` feature.
+  - `examples/hello_zkie.rs` — the 6-step demo above (no weights needed).
 - `crates/zkie-ops/` — op-level proof primitives, one per ONNX op type:
   - `compose.rs` — `Op`, `Store`, `prove_shard`, `prove_shard_dag`, and the
     cross-shard `same_poly` binding.
@@ -163,8 +237,11 @@ and the reasoning behind the numbers is in
   `models/deepseek-v2-lite/` — one crate per model; each holds the op-graph
   builder (`src/lib.rs`), its own `examples/` (prove + benchmarks), and a
   gitignored `weights/` (export steps + sha256 in the per-model `README.md`).
+- `scripts/` — ONNX export, fixed-point extraction, lookup-table generators and
+  fidelity checks. Tables are per-model: they land in `models/<model>/weights/`.
 - `docs/` — `spec.md` (design), `benchmarks.md` (measurements),
-  `adding-a-model.md` (how to add a new model), `roadmap.md`.
+  `adding-a-model.md` (how to add a new model), `roadmap.md`, and
+  `overview.zh-CN.md` (Chinese project overview).
 
 ## License
 
